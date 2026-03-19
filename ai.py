@@ -112,7 +112,7 @@ class GeminiAnalyst:
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
         self._signal_model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-3.1-flash-lite-preview",
             system_instruction=SIGNAL_SYSTEM_PROMPT,
             generation_config=genai.types.GenerationConfig(
                 temperature=0.15,
@@ -121,7 +121,7 @@ class GeminiAnalyst:
             )
         )
         self._monitor_model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-3.1-flash-lite-preview",
             system_instruction=MONITOR_SYSTEM_PROMPT,
             generation_config=genai.types.GenerationConfig(
                 temperature=0.1,
