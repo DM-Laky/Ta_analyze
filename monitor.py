@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Callable, Optional
 
-from engine import ExchangeManager, analyze_timeframe
+from engine import ExchangeManager, analyze_tf
 from state import (
     load_trade_state, update_trade_state,
     get_pnl_pct, get_pnl_usdt
