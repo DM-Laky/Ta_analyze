@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>APEX V10 — AI Trading Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Chakra+Petch:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+:root{
+  --void:#03080f;--base:#060e18;--panel:#090f1a;--card:#0c1525;
+  --elevated:#0f1c30;--border:#152236;--border-hi:#1e3a5f;
+  --cyan:#00c8f0;--cyan-dim:#005f72;
+  --green:#00e676;--green-dim:#004d26;
+  --red:#ff3b55;--red-dim:#4d0010;
+  --amber:#ffab00;--purple:#b388ff;
+  --white:#ddeeff;--muted:#4a7090;--dim:#1e3a55;
+  --font-mono:'IBM Plex Mono',monospace;
+  --font-ui:'Chakra Petch',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{background:var(--void);color:var(--white);font-family:var(--font-mono);font-size:13px}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:2px}
+
+/* ── Layout ── */
+#shell{display:grid;grid-template-rows:44px 30px 1fr 210px;height:100vh;overflow:hidden}
+#main-area{display:grid;grid-template-columns:290px 1fr 280px;overflow:hidden;border-top:1px solid var(--border)}
+
+/* ── Panel ── */
+.panel{background:var(--panel);border-right:1px solid var(--border);overflow-y:auto}
+.panel:last-child{border-right:none}
+.ph{font-family:var(--font-ui);font-size:10px;font-weight:600;letter-spacing:.18em;
+    color:var(--muted);padding:7px 12px 6px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;text-transform:uppercase;flex-shrink:0}
+.ph-dot{width:5px;height:5px;border-radius:50%;background:var(--cyan);
+        box-shadow:0 0 6px var(--cyan);animation:pdot 2s ease-in-out infinite;
+        display:inline-block;margin-right:7px}
+@keyframes pdot{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* ── Header ── */
+#topbar{background:var(--base);border-bottom:1px solid var(--border);
+        display:flex;align-items:center;padding:0 14px;gap:16px}
+.logo{font-family:var(--font-ui);font-weight:700;font-size:16px;
+      letter-spacing:.2em;color:var(--cyan);white-space:nowrap}
+.logo span{color:var(--muted);font-size:10px;letter-spacing:.1em}
+.tb-sep{width:1px;height:24px;background:var(--border);flex-shrink:0}
+.tb-item{display:flex;flex-direction:column;gap:1px}
+.tb-lbl{font-size:9px;color:var(--muted);letter-spacing:.1em}
+.tb-val{font-family:var(--font-ui);font-size:12px;color:var(--white)}
+#conn-ring{width:8px;height:8px;border-radius:50%;background:var(--red);
+           box-shadow:0 0 6px var(--red);transition:all .4s;flex-shrink:0}
+#conn-ring.on{background:var(--green);box-shadow:0 0 8px var(--green);animation:cring 2s ease infinite}
+@keyframes cring{0%,100%{opacity:1}50%{opacity:.5}}
+.spacer{flex:1}
+
+/* ── Status bar ── */
+#statusbar{background:#05090f;border-bottom:1px solid var(--border);
+           display:flex;align-items:center;gap:16px;padding:0 14px;
+           overflow-x:auto;white-space:nowrap}
+.sb-item{display:flex;gap:6px;align-items:center;font-size:10px;color:var(--muted);letter-spacing:.05em}
+.sb-val{color:var(--white)}
+
+/* ── Pair buttons ── */
+.pair-btn{display:flex;align-items:center;justify-content:space-between;
+          padding:7px 12px;border-bottom:1px solid var(--border);
+          cursor:pointer;transition:background .15s;font-size:12px}
+.pair-btn:hover{background:var(--elevated)}
+.pair-btn.selected{background:rgba(0,200,240,.07);border-left:2px solid var(--cyan)}
+.pair-name{font-weight:600;color:var(--white);letter-spacing:.05em}
+.pair-vol{font-size:10px;color:var(--muted)}
+
+/* ── Inputs ── */
+.apex-input{background:var(--elevated);border:1px solid var(--border-hi);
+            color:var(--white);font-family:var(--font-mono);font-size:12px;
+            padding:7px 10px;outline:none;width:100%;transition:border-color .2s}
+.apex-input:focus{border-color:var(--cyan)}
+.apex-input::placeholder{color:var(--muted)}
+
+/* ── Buttons ── */
+.btn{font-family:var(--font-ui);font-weight:600;font-size:12px;letter-spacing:.1em;
+     padding:8px 16px;border:none;cursor:pointer;transition:opacity .2s,transform .1s;text-transform:uppercase}
+.btn:hover{opacity:.85;transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn-cyan{background:var(--cyan);color:#000}
+.btn-green{background:var(--green);color:#000}
+.btn-red{background:transparent;color:var(--red);border:1px solid var(--red)}
+.btn-dim{background:var(--elevated);color:var(--muted);border:1px solid var(--border-hi)}
+.btn:disabled{opacity:.35;cursor:not-allowed;transform:none}
+
+/* ── Signal card ── */
+.sig-dir{font-family:var(--font-ui);font-weight:700;font-size:38px;letter-spacing:.15em;line-height:1}
+.sig-long{color:var(--green);text-shadow:0 0 24px rgba(0,230,118,.4)}
+.sig-short{color:var(--red);text-shadow:0 0 24px rgba(255,59,85,.4)}
+.sig-none{color:var(--muted)}
+
+.lvl-row{display:flex;justify-content:space-between;align-items:center;
+         padding:5px 0;border-bottom:1px solid var(--border);font-size:12px}
+.lvl-row:last-child{border-bottom:none}
+.lvl-k{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+.lvl-v{font-weight:600;color:var(--white)}
+
+/* ── Badges ── */
+.badge{font-family:var(--font-ui);font-size:10px;font-weight:600;
+       letter-spacing:.1em;padding:2px 8px;border:1px solid;text-transform:uppercase}
+.badge-scalp   {color:#60a5fa;border-color:#60a5fa;background:rgba(96,165,250,.07)}
+.badge-swing   {color:var(--purple);border-color:var(--purple);background:rgba(179,136,255,.07)}
+.badge-sniper  {color:var(--amber);border-color:var(--amber);background:rgba(255,171,0,.07)}
+.badge-strong  {color:var(--green);border-color:var(--green);background:rgba(0,230,118,.07)}
+.badge-standard{color:var(--muted);border-color:var(--muted);background:transparent}
+.badge-long    {color:var(--green);border-color:var(--green);background:rgba(0,230,118,.07)}
+.badge-short   {color:var(--red);border-color:var(--red);background:rgba(255,59,85,.07)}
+.badge-fvg     {color:var(--amber);border-color:var(--amber);background:rgba(255,171,0,.07)}
+.badge-ob      {color:var(--purple);border-color:var(--purple);background:rgba(179,136,255,.07)}
+.badge-none    {color:var(--muted);border-color:var(--dim);background:transparent}
+
+/* ── Confidence bar ── */
+.conf-bar-wrap{height:4px;background:var(--elevated);border-radius:2px;overflow:hidden;margin-top:4px}
+.conf-bar{height:100%;border-radius:2px;transition:width 1s ease}
+
+/* ── TP levels ── */
+.tp-row{display:flex;align-items:center;gap:8px;padding:4px 0}
+.tp-lbl{font-family:var(--font-ui);font-size:13px;font-weight:600;width:28px;flex-shrink:0}
+.tp-track{flex:1;height:3px;background:var(--elevated);border-radius:2px;overflow:hidden}
+.tp-fill{height:100%;border-radius:2px}
+.tp-val{font-size:11px;color:var(--white);min-width:88px;text-align:right}
+
+/* ── Confluence bars ── */
+.cf-row{display:flex;align-items:center;gap:8px;padding:4px 0}
+.cf-lbl{font-size:10px;color:var(--muted);width:72px;flex-shrink:0;letter-spacing:.04em;text-transform:uppercase}
+.cf-track{flex:1;height:4px;background:var(--elevated);border-radius:2px;overflow:hidden}
+.cf-fill{height:100%;border-radius:2px;transition:width .8s ease}
+.cf-val{font-size:10px;color:var(--white);width:32px;text-align:right}
+
+/* ── Monitor ── */
+.mon-status{font-family:var(--font-ui);font-weight:700;font-size:13px;
+            letter-spacing:.1em;padding:5px 12px;text-align:center}
+.st-hold        {background:rgba(0,200,240,.08);color:var(--cyan);border:1px solid var(--cyan)}
+.st-close-warn  {background:rgba(255,171,0,.08);color:var(--amber);border:1px solid var(--amber);animation:bwarn 1.2s ease infinite}
+.st-close-now   {background:rgba(255,59,85,.12);color:var(--red);border:1px solid var(--red);animation:bwarn .6s ease infinite}
+.st-ready       {background:rgba(0,230,118,.08);color:var(--green);border:1px solid var(--green)}
+@keyframes bwarn{0%,100%{opacity:1}50%{opacity:.5}}
+
+.pnl-pos{color:var(--green)}
+.pnl-neg{color:var(--red)}
+
+/* ── Log terminal ── */
+#log-section{background:#030810;border-top:1px solid var(--border);
+             display:flex;flex-direction:column;overflow:hidden}
+#log-header{display:flex;align-items:center;justify-content:space-between;
+            padding:5px 14px;border-bottom:1px solid var(--border);flex-shrink:0}
+#log-terminal{flex:1;overflow-y:auto;padding:6px 12px;font-size:11px;line-height:1.75}
+.ll{display:flex;gap:10px;animation:ll-in .18s ease}
+@keyframes ll-in{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:none}}
+.lt{color:var(--dim);flex-shrink:0;user-select:none}
+.lm{flex:1;word-break:break-word}
+.t-engine  {color:#4a7090}.t-screener{color:#60a5fa}.t-smc{color:#c084fc}
+.t-ai      {color:#fbbf24}.t-signal  {color:var(--green)}.t-order{color:var(--cyan)}
+.t-monitor {color:#34d399}.t-trade   {color:var(--amber)}.t-reset{color:var(--purple)}
+.t-cancel  {color:var(--red)}.t-apex{color:#e2e8f0}.t-wallet{color:#fbbf24}
+.t-error   {color:var(--red)}
+
+/* ── Reason box ── */
+.reason-box{background:var(--elevated);border-left:2px solid var(--cyan);
+            padding:8px 10px;font-size:11px;color:#7ea8c8;line-height:1.6}
+.entry-reason-box{background:rgba(0,200,240,.05);border-left:2px solid var(--amber);
+                  padding:6px 10px;font-size:11px;color:#c8a060;line-height:1.5;margin-bottom:8px}
+
+/* ── Spinner ── */
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border-hi);
+         border-top-color:var(--cyan);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Empty states ── */
+.empty-state{text-align:center;padding:30px 16px;color:var(--dim);font-size:11px;letter-spacing:.05em}
+.empty-state .big{font-family:var(--font-ui);font-size:22px;color:var(--border-hi);letter-spacing:.15em;margin-bottom:8px}
+
+/* ── Cursor ── */
+.cur{display:inline-block;width:6px;height:12px;background:var(--cyan);
+     margin-left:3px;vertical-align:middle;animation:cblink 1s step-end infinite}
+@keyframes cblink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ── Mobile tabs ── */
+#mob-tabs{display:none;background:var(--base);border-bottom:1px solid var(--border)}
+@media(max-width:1100px){
+  html,body{overflow:auto}
+  #shell{display:flex;flex-direction:column;height:auto;overflow:visible}
+  #main-area{grid-template-columns:1fr;height:auto}
+  #mob-tabs{display:flex}
+  .mob-tab{flex:1;padding:10px 4px;font-family:var(--font-ui);font-size:11px;
+           font-weight:600;letter-spacing:.08em;color:var(--muted);background:none;
+           border:none;border-bottom:2px solid transparent;cursor:pointer;
+           text-transform:uppercase;text-align:center}
+  .mob-tab.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+  .tab-panel{display:none!important}
+  .tab-panel.active{display:flex!important;flex-direction:column}
+  #log-section{height:280px}
+}
+</style>
+</head>
+<body>
+<div id="shell">
+
+<!-- ── HEADER ── -->
+<header id="topbar">
+  <div>
+    <div class="logo">APEX <span>V10</span></div>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-item">
+    <span class="tb-lbl">SERVER IP</span>
+    <span class="tb-val" id="tb-ip" style="color:var(--amber)">detecting...</span>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-item">
+    <span class="tb-lbl">BALANCE</span>
+    <span class="tb-val" id="tb-bal">$—</span>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-item">
+    <span class="tb-lbl">ACCOUNT</span>
+    <span class="tb-val" id="tb-acct" style="color:var(--cyan)">$100</span>
+  </div>
+  <div class="spacer"></div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div id="conn-ring"></div>
+    <span style="font-size:10px;color:var(--muted)" id="conn-lbl">CONNECTING</span>
+  </div>
+  <div class="tb-sep"></div>
+  <span style="font-size:11px;color:var(--muted)" id="clock">--:--:--</span>
+</header>
+
+<!-- ── STATUS BAR ── -->
+<div id="statusbar">
+  <div class="sb-item">PAIR   <span class="sb-val" id="sb-pair">—</span></div>
+  <div class="sb-item">CMP    <span class="sb-val" id="sb-cmp">—</span></div>
+  <div class="sb-item">PNL    <span class="sb-val" id="sb-pnl">—</span></div>
+  <div class="sb-item">MODE   <span class="sb-val" id="sb-mode">—</span></div>
+  <div class="sb-item">ENTRY  <span class="sb-val" id="sb-entry">—</span></div>
+  <div class="sb-item">SL     <span class="sb-val" id="sb-sl" style="color:var(--red)">—</span></div>
+  <div class="sb-item">CONF   <span class="sb-val" id="sb-conf">—</span></div>
+  <div class="sb-item">CYCLES <span class="sb-val" id="sb-cycles">0</span></div>
+</div>
+
+<!-- ── MOBILE TABS ── -->
+<div id="mob-tabs">
+  <button class="mob-tab active" onclick="switchTab('pairs')">PAIRS</button>
+  <button class="mob-tab" onclick="switchTab('signal')">SIGNAL</button>
+  <button class="mob-tab" onclick="switchTab('monitor')">MONITOR</button>
+</div>
+
+<!-- ── MAIN GRID ── -->
+<div id="main-area">
+
+  <!-- LEFT: Pair Selector -->
+  <div class="panel tab-panel active" id="tab-pairs" style="display:flex;flex-direction:column">
+    <div class="ph"><span><span class="ph-dot"></span>PAIR SELECTION</span></div>
+
+    <div style="padding:10px;border-bottom:1px solid var(--border);display:flex;gap:6px">
+      <input class="apex-input" id="pair-input" placeholder="e.g. SOL/USDT" maxlength="20" autocomplete="off"/>
+      <button class="btn btn-cyan" style="flex-shrink:0;padding:7px 12px;font-size:11px" onclick="analyzeManual()">GO</button>
+    </div>
+
+    <div style="padding:8px 10px;border-bottom:1px solid var(--border)">
+      <button class="btn btn-dim" style="width:100%;font-size:11px" id="load-pairs-btn" onclick="loadTopPairs()">
+        🔍 SMART SMC SCREENER — SCORE ALL PAIRS
+      </button>
+    </div>
+
+    <div id="pairs-list" style="flex:1;overflow-y:auto">
+      <div class="empty-state"><div class="big">—</div>Click "Load Top 10"<br>or type a pair above</div>
+    </div>
+
+    <div style="padding:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px">
+      <button class="btn btn-green" id="analyze-btn" style="width:100%" onclick="startAnalysis()" disabled>
+        ⚡ ANALYZE SELECTED PAIR
+      </button>
+      <div id="analyze-status" style="font-size:10px;color:var(--muted);text-align:center;min-height:14px"></div>
+    </div>
+  </div>
+
+  <!-- CENTER: Signal + Monitor -->
+  <div class="panel tab-panel" id="tab-signal" style="display:flex;flex-direction:column;border-right:1px solid var(--border)">
+    <div class="ph" style="justify-content:space-between">
+      <span><span class="ph-dot"></span>AI SIGNAL — ICT/SMC VALIDATED</span>
+      <div id="sig-mode-badge" class="badge badge-none">WAITING</div>
+    </div>
+
+    <div style="flex:1;overflow-y:auto;padding:14px">
+
+      <!-- IDLE -->
+      <div id="state-idle">
+        <div class="empty-state" style="padding-top:40px">
+          <div class="big">APEX V10</div>
+          Select a pair → Analyze<br>
+          SMC/ICT engine will find the setup<span class="cur"></span>
+        </div>
+      </div>
+
+      <!-- ANALYZING -->
+      <div id="state-analyzing" style="display:none">
+        <div class="empty-state" style="padding-top:40px">
+          <div class="big"><span class="spinner"></span></div>
+          <div style="margin-top:12px;color:var(--cyan)" id="analyzing-msg">Running 5-TF ICT analysis...</div>
+        </div>
+      </div>
+
+      <!-- NO SIGNAL -->
+      <div id="state-no-signal" style="display:none">
+        <div class="empty-state" style="padding-top:30px">
+          <div class="big" style="color:var(--amber);font-size:18px">NO ICT SETUP</div>
+          <div id="no-signal-reason" style="color:var(--muted);margin-top:8px;max-width:260px;
+               margin-left:auto;margin-right:auto;line-height:1.6"></div>
+        </div>
+        <div style="padding:10px 0">
+          <div class="lvl-row"><span class="lvl-k">SMC Reason</span><span class="lvl-v" id="ns-reason" style="font-size:11px;color:var(--muted);text-align:right;max-width:60%">—</span></div>
+        </div>
+      </div>
+
+      <!-- SIGNAL -->
+      <div id="state-signal" style="display:none">
+
+        <!-- Direction + confidence -->
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+          <div>
+            <div style="font-size:10px;color:var(--muted);letter-spacing:.1em;margin-bottom:4px" id="sig-pair-label">—</div>
+            <div class="sig-dir sig-none" id="sig-direction">—</div>
+            <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap" id="sig-badges"></div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:9px;color:var(--muted);letter-spacing:.1em">CONFIDENCE</div>
+            <div style="font-family:var(--font-ui);font-size:34px;font-weight:700;line-height:1" id="sig-conf-num">0%</div>
+            <div class="conf-bar-wrap" style="width:90px;margin-left:auto">
+              <div class="conf-bar" id="sig-conf-bar" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Entry reasoning (ICT zone explanation) -->
+        <div class="entry-reason-box" id="sig-entry-reasoning" style="display:none"></div>
+
+        <!-- Entry condition banner -->
+        <div id="entry-condition-banner" style="display:none;padding:8px 12px;margin-bottom:10px;text-align:center;font-family:var(--font-ui);font-size:11px;font-weight:600;letter-spacing:.08em;border:1px solid"></div>
+        <div id="entry-note-box" style="display:none;padding:7px 10px;margin-bottom:10px;font-family:var(--font-mono);font-size:10px;color:var(--muted);background:var(--elevated);border-left:2px solid var(--amber);line-height:1.6"></div>
+
+        <!-- Price levels -->
+        <div style="border:1px solid var(--border);margin-bottom:12px">
+          <div class="lvl-row" style="padding:6px 10px">
+            <span class="lvl-k">LIMIT ENTRY</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span id="sig-entry-zone-badge" class="badge badge-none" style="font-size:9px"></span>
+              <span class="lvl-v" id="sl-entry">—</span>
+            </div>
+          </div>
+          <div class="lvl-row" style="padding:6px 10px"><span class="lvl-k">ENTRY ZONE</span><span class="lvl-v" style="color:var(--muted);font-size:11px" id="sl-entry-zone">—</span></div>
+          <div class="lvl-row" style="padding:6px 10px"><span class="lvl-k">DIST FROM CMP</span><span class="lvl-v" style="color:var(--amber)" id="sl-dist-cmp">—</span></div>
+          <div class="lvl-row" style="padding:6px 10px"><span class="lvl-k">STOP LOSS</span><span class="lvl-v" style="color:var(--red)" id="sl-sl">—</span></div>
+          <div class="lvl-row" style="padding:6px 10px"><span class="lvl-k">SL DISTANCE</span><span class="lvl-v" id="sl-dist">—</span></div>
+          <div class="lvl-row" style="padding:6px 10px"><span class="lvl-k">HARD INVALIDATION</span><span class="lvl-v" style="color:var(--red)" id="sl-hard-inv">—</span></div>
+          <div class="lvl-row" style="padding:6px 10px;border-bottom:none"><span class="lvl-k">SOFT WARNING</span><span class="lvl-v" style="color:var(--amber)" id="sl-soft-warn">—</span></div>
+        </div>
+
+        <!-- TP levels -->
+        <div style="margin-bottom:12px">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.12em;margin-bottom:8px;text-transform:uppercase">TAKE PROFIT TARGETS</div>
+          <div class="tp-row">
+            <span class="tp-lbl" style="color:#60a5fa">TP1</span>
+            <div class="tp-track"><div class="tp-fill" style="width:100%;background:#60a5fa"></div></div>
+            <span class="tp-val" id="sig-tp1">—</span>
+          </div>
+          <div class="tp-row">
+            <span class="tp-lbl" style="color:var(--amber)">TP2</span>
+            <div class="tp-track"><div class="tp-fill" style="width:65%;background:var(--amber)"></div></div>
+            <span class="tp-val" id="sig-tp2">—</span>
+          </div>
+          <div class="tp-row">
+            <span class="tp-lbl" style="color:var(--purple)">TP3</span>
+            <div class="tp-track"><div class="tp-fill" style="width:33%;background:var(--purple)"></div></div>
+            <span class="tp-val" id="sig-tp3">—</span>
+          </div>
+        </div>
+
+        <!-- Money management -->
+        <div style="background:var(--elevated);border:1px solid var(--border);padding:10px;margin-bottom:12px">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.12em;margin-bottom:8px;text-transform:uppercase">MONEY MANAGEMENT</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <span class="lvl-k">LEVERAGE</span>
+              <span style="font-family:var(--font-ui);font-size:22px;font-weight:700;color:var(--amber)" id="risk-lev">—</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <span class="lvl-k">MARGIN USDT</span>
+              <span style="font-family:var(--font-ui);font-size:22px;font-weight:700;color:var(--cyan)" id="risk-margin">—</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <span class="lvl-k">RISK AMOUNT</span>
+              <span style="font-family:var(--font-ui);font-size:16px;font-weight:600;color:var(--red)" id="risk-amount">—</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <span class="lvl-k">RR RATIO</span>
+              <span style="font-family:var(--font-ui);font-size:16px;font-weight:600;color:var(--green)" id="risk-rr">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Confluence -->
+        <div style="margin-bottom:12px">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.12em;margin-bottom:8px;text-transform:uppercase">CONFLUENCE BREAKDOWN</div>
+          <div class="cf-row"><span class="cf-lbl">SMC Struct</span><div class="cf-track"><div class="cf-fill" id="cf-smc" style="background:var(--cyan)"></div></div><span class="cf-val" id="cf-smc-v">—</span></div>
+          <div class="cf-row"><span class="cf-lbl">Entry Zone</span><div class="cf-track"><div class="cf-fill" id="cf-zone" style="background:#60a5fa"></div></div><span class="cf-val" id="cf-zone-v">—</span></div>
+          <div class="cf-row"><span class="cf-lbl">RSI</span><div class="cf-track"><div class="cf-fill" id="cf-rsi" style="background:var(--amber)"></div></div><span class="cf-val" id="cf-rsi-v">—</span></div>
+          <div class="cf-row"><span class="cf-lbl">EMA</span><div class="cf-track"><div class="cf-fill" id="cf-ema" style="background:var(--purple)"></div></div><span class="cf-val" id="cf-ema-v">—</span></div>
+          <div class="cf-row"><span class="cf-lbl">Vol+Pat</span><div class="cf-track"><div class="cf-fill" id="cf-vp" style="background:var(--green)"></div></div><span class="cf-val" id="cf-vp-v">—</span></div>
+        </div>
+
+        <!-- AI Reasoning -->
+        <div class="reason-box" id="sig-reasoning" style="margin-bottom:14px">—</div>
+
+        <!-- Enter Trade -->
+        <button class="btn btn-green" id="enter-trade-btn" style="width:100%;font-size:13px;padding:12px" onclick="enterTrade()">
+          ✅ ENTER TRADE — START MONITORING
+        </button>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Monitor + Levels -->
+  <div class="panel tab-panel" id="tab-monitor" style="display:flex;flex-direction:column">
+    <div class="ph"><span><span class="ph-dot"></span>LIVE MONITOR</span></div>
+
+    <div id="monitor-idle" style="padding:16px">
+      <div class="empty-state" style="padding:20px 0">
+        <div class="big" style="font-size:18px">NOT IN TRADE</div>
+        Enter a trade to start 5-min monitoring
+      </div>
+    </div>
+
+    <div id="monitor-active" style="display:none;padding:10px;flex-direction:column;gap:10px">
+      <div class="mon-status st-hold" id="mon-status-badge">HOLD</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="background:var(--elevated);padding:10px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:4px">CMP</div>
+          <div style="font-family:var(--font-ui);font-size:18px;font-weight:700;color:var(--cyan)" id="mon-cmp">—</div>
+        </div>
+        <div style="background:var(--elevated);padding:10px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:4px">PNL</div>
+          <div style="font-family:var(--font-ui);font-size:16px;font-weight:700" id="mon-pnl">—</div>
+        </div>
+      </div>
+
+      <div style="border:1px solid var(--border)">
+        <div class="lvl-row" style="padding:5px 10px"><span class="lvl-k">Pair</span><span class="lvl-v" id="mon-pair">—</span></div>
+        <div class="lvl-row" style="padding:5px 10px"><span class="lvl-k">Direction</span><span class="lvl-v" id="mon-dir">—</span></div>
+        <div class="lvl-row" style="padding:5px 10px"><span class="lvl-k">Entry</span><span class="lvl-v" id="mon-entry">—</span></div>
+        <div class="lvl-row" style="padding:5px 10px"><span class="lvl-k">Stop Loss</span><span class="lvl-v" style="color:var(--red)" id="mon-sl">—</span></div>
+        <div class="lvl-row" style="padding:5px 10px"><span class="lvl-k">BE Moved</span><span class="lvl-v" id="mon-be">—</span></div>
+        <div class="lvl-row" style="padding:5px 10px"><span class="lvl-k">RSI 1H</span><span class="lvl-v" id="mon-rsi">—</span></div>
+        <div class="lvl-row" style="padding:5px 10px"><span class="lvl-k">1H Trend</span><span class="lvl-v" id="mon-trend">—</span></div>
+        <div class="lvl-row" style="padding:5px 10px;border-bottom:none"><span class="lvl-k">Cycles</span><span class="lvl-v" id="mon-cycles">0</span></div>
+      </div>
+
+      <div id="mon-tp-hits" style="display:none;padding:8px;background:rgba(0,230,118,.07);
+           border:1px solid var(--green);font-size:11px;color:var(--green)"></div>
+      <div id="mon-warnings" style="display:none;padding:8px;background:rgba(255,171,0,.07);
+           border:1px solid var(--amber);font-size:10px;color:var(--amber);line-height:1.8"></div>
+    </div>
+
+    <!-- Key Levels -->
+    <div class="ph" style="margin-top:auto"><span><span class="ph-dot"></span>KEY LEVELS</span></div>
+    <div style="padding:10px">
+      <div class="lvl-row"><span class="lvl-k">Liq Above</span><span class="lvl-v" style="color:var(--red)" id="kl-liq-above">—</span></div>
+      <div class="lvl-row"><span class="lvl-k">Liq Below</span><span class="lvl-v" style="color:var(--green)" id="kl-liq-below">—</span></div>
+      <div class="lvl-row"><span class="lvl-k">OB Zone Hi</span><span class="lvl-v" id="kl-ob-hi">—</span></div>
+      <div class="lvl-row"><span class="lvl-k">OB Zone Lo</span><span class="lvl-v" id="kl-ob-lo">—</span></div>
+      <div class="lvl-row" style="border-bottom:none"><span class="lvl-k">Funding Rate</span><span class="lvl-v" id="kl-fr">—</span></div>
+    </div>
+
+    <!-- Reset -->
+    <div style="padding:10px;border-top:1px solid var(--border)">
+      <button class="btn btn-red" style="width:100%;font-size:11px" onclick="resetSystem()">
+        🔄 NEW DAY — RESET SYSTEM
+      </button>
+    </div>
+  </div>
+
+</div><!-- /main-area -->
+
+<!-- ── LOG TERMINAL ── -->
+<div id="log-section">
+  <div id="log-header">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="ph-dot"></span>
+      <span style="font-family:var(--font-ui);font-size:10px;font-weight:600;letter-spacing:.15em;color:var(--muted)">EXECUTION LOGS</span>
+      <span style="font-size:10px;color:var(--dim)" id="log-count">0 lines</span>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button id="autoscroll-btn" onclick="toggleAutoscroll()"
+        style="font-family:var(--font-mono);font-size:10px;color:var(--cyan);
+               background:none;border:1px solid var(--border-hi);padding:2px 8px;cursor:pointer">⬇ AUTO</button>
+      <button onclick="clearLogs()"
+        style="font-family:var(--font-mono);font-size:10px;color:var(--muted);
+               background:none;border:1px solid var(--border);padding:2px 8px;cursor:pointer">CLEAR</button>
+    </div>
+  </div>
+  <div id="log-terminal">
+    <div class="ll"><span class="lt">00:00:00</span><span class="lm t-apex">APEX V10 — ICT/SMC Trading Terminal ready.</span></div>
+  </div>
+</div>
+
+</div><!-- /shell -->
+
+<!-- ══════════════════════ JS ══════════════════════ -->
+<script>
+// ── State ──────────────────────────────────────────
+let ws=null, wsTimer=null;
+let autoscroll=true, logCount=0;
+let selectedPair=null, currentSignal=null, inTrade=false, pricePoller=null;
+
+// ── Clock ───────────────────────────────────────────
+function tick(){
+  document.getElementById('clock').textContent =
+    new Date().toISOString().split('T')[1].split('.')[0]+' UTC';
+}
+setInterval(tick,1000); tick();
+
+// ── WebSocket ───────────────────────────────────────
+function connectWS(){
+  const proto = location.protocol==='https:'?'wss':'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen  = ()=>{ setConnected(true); clearTimeout(wsTimer);
+                     setInterval(()=>{if(ws&&ws.readyState===1)ws.send('ping')},15000); };
+  ws.onmessage = e=>{ try{ handle(JSON.parse(e.data)); }catch(_){} };
+  ws.onclose = ()=>{ setConnected(false); wsTimer=setTimeout(connectWS,3000); };
+  ws.onerror = ()=>ws.close();
+}
+
+function setConnected(on){
+  const r=document.getElementById('conn-ring'), l=document.getElementById('conn-lbl');
+  r.className=on?'on':'';
+  l.textContent=on?'LIVE':'RECONNECTING';
+}
+
+// ── Message Handler ─────────────────────────────────
+function handle(msg){
+  switch(msg.type){
+    case 'init':           onInit(msg.data);         break;
+    case 'log':            appendLog(msg.data);       break;
+    case 'signal':         onSignal(msg.data);        break;
+    case 'no_signal':      onNoSignal(msg.data);      break;
+    case 'monitor':        onMonitor(msg.data);       break;
+    case 'status':         onStatus(msg.data);        break;
+    case 'reset':          onReset();                 break;
+    case 'analysis_error': onAnalysisError(msg.data); break;
+    case 'pong': break;
+  }
+}
+
+function onInit(d){
+  if(d.server_ip)    document.getElementById('tb-ip').textContent   = d.server_ip;
+  if(d.account_size) document.getElementById('tb-acct').textContent = '$'+d.account_size;
+  if(d.trade_state){
+    const ts=d.trade_state;
+    if(ts.in_trade){ inTrade=true; loadTradeFromState(ts); showMonitorActive(); }
+    if(ts.active&&ts.entry&&!ts.in_trade) onSignal(ts);
+  }
+}
+function onStatus(d){ if(d.analysis_busy!==undefined) setAnalysisBusy(d.analysis_busy,d.pair); }
+function onReset(){
+  inTrade=false; currentSignal=null; selectedPair=null;
+  stopPricePoller(); showIdle(); showMonitorIdle(); clearStatusBar();
+  document.getElementById('pair-input').value='';
+}
+function onAnalysisError(d){ setAnalysisBusy(false); onNoSignal({reason:d.error||'Analysis failed'}); }
+
+// ── Log Terminal ────────────────────────────────────
+const TAG_MAP={SCREENER:'t-screener',SMC:'t-smc',AI:'t-ai',SIGNAL:'t-signal',
+               ORDER:'t-order',MONITOR:'t-monitor',TRADE:'t-trade',RESET:'t-reset',
+               CANCEL:'t-cancel',ENGINE:'t-engine',APEX:'t-apex',WALLET:'t-wallet',ERROR:'t-error'};
+
+function getTagClass(msg){
+  const m=msg.match(/\[([A-Z]+)\]/);
+  return m?(TAG_MAP[m[1]]||'t-apex'):'t-apex';
+}
+
+function appendLog(entry){
+  const t=document.getElementById('log-terminal');
+  const line=document.createElement('div'); line.className='ll';
+  const ts=document.createElement('span'); ts.className='lt'; ts.textContent=entry.ts;
+  const msg=document.createElement('span'); msg.className='lm '+getTagClass(entry.msg);
+  msg.textContent=entry.msg;
+  line.appendChild(ts); line.appendChild(msg); t.appendChild(line);
+  while(t.children.length>400) t.removeChild(t.firstChild);
+  logCount++;
+  document.getElementById('log-count').textContent=logCount+' lines';
+  if(autoscroll) t.scrollTop=t.scrollHeight;
+}
+
+function clearLogs(){
+  document.getElementById('log-terminal').innerHTML='';
+  logCount=0; document.getElementById('log-count').textContent='0 lines';
+}
+
+function toggleAutoscroll(){
+  autoscroll=!autoscroll;
+  document.getElementById('autoscroll-btn').style.color=autoscroll?'var(--cyan)':'var(--muted)';
+}
+
+// ── Load Pairs ──────────────────────────────────────
+async function loadTopPairs(){
+  const btn=document.getElementById('load-pairs-btn');
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span> SCREENING ALL PAIRS... (10-15s)';
+  document.getElementById('pairs-list').innerHTML=
+    '<div class="empty-state"><div class="spinner" style="width:20px;height:20px;margin:0 auto 10px"></div>Scoring all Binance Futures pairs<br>on 1H + 4H SMC/ICT structure...</div>';
+  try{
+    const r=await fetch('/api/top_pairs');
+    const d=await r.json();
+    if(d.warning){
+      appendLog({ts:new Date().toISOString().split('T')[1].split('.')[0],
+                 msg:'[SCREENER] ⚠️ '+d.warning,level:'INFO'});
+    }
+    renderPairs(d.pairs||[]);
+    if((d.pairs||[]).length){
+      const count=d.pairs.length;
+      const best=d.pairs[0];
+      document.getElementById('analyze-status').textContent=
+        `${count} pairs scored ≥60 | Best: ${best.pair} (${best.score}/100)`;
+    }
+  }catch(e){
+    document.getElementById('pairs-list').innerHTML=
+      '<div class="empty-state" style="color:var(--red)">Network error — check server connection</div>';
+  }finally{
+    btn.disabled=false;
+    btn.textContent='🔍 SMART SMC SCREENER — SCORE ALL PAIRS';
+  }
+}
+
+function renderPairs(pairs){
+  const c=document.getElementById('pairs-list');
+  if(!pairs.length){
+    c.innerHTML='<div class="empty-state"><div class="big">—</div>No pairs scored ≥ 60/100<br>Market may be ranging</div>';
+    return;
+  }
+  const gradeColor={'ELITE':'var(--green)','STRONG':'var(--cyan)','STANDARD':'var(--amber)','WEAK':'var(--muted)'};
+  const dirColor={'bullish':'var(--green)','bearish':'var(--red)','ranging':'var(--muted)'};
+  c.innerHTML=pairs.map((p,i)=>{
+    const chg=p.change||0;
+    const chgCls=chg>=0?'color:var(--green)':'color:var(--red)';
+    const vol=p.volume>=1e9?`$${(p.volume/1e9).toFixed(1)}B`:
+              p.volume>=1e6?`$${(p.volume/1e6).toFixed(0)}M`:`$${(p.volume||0).toFixed(0)}`;
+    const score=p.score||0;
+    const grade=p.grade||'—';
+    const setup=p.setup_type||'';
+    const dir=(p.direction||'ranging').toLowerCase();
+    const gc=gradeColor[grade]||'var(--muted)';
+    const dc=dirColor[dir]||'var(--muted)';
+    const isDiamond=setup.includes('SWEEP')&&setup.includes('OB');
+    const sc=score>=95?'var(--green)':score>=85?'var(--cyan)':score>=75?'var(--amber)':'var(--muted)';
+    return `<div class="pair-btn" id="pb-${i}" onclick="selectPair('${p.pair}',${i})">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">
+          <span class="pair-name">${p.pair}</span>
+          ${isDiamond?`<span style="color:var(--amber);font-size:10px">⬡</span>`:''}
+          <span style="font-family:var(--font-ui);font-size:9px;font-weight:700;color:${gc};border:1px solid ${gc};padding:1px 4px">${grade}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          <div style="flex:1;height:3px;background:var(--elevated);border-radius:2px;overflow:hidden">
+            <div style="width:${score}%;height:100%;background:${sc};border-radius:2px"></div>
+          </div>
+          <span style="font-family:var(--font-ui);font-size:11px;font-weight:700;color:${sc};flex-shrink:0">${score}/100</span>
+        </div>
+        <div style="display:flex;gap:8px">
+          <span style="font-size:9px;color:${dc};letter-spacing:.05em">${dir.toUpperCase()}</span>
+          <span style="font-size:9px;color:var(--muted)">${setup}</span>
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0;margin-left:8px">
+        <div style="${chgCls};font-size:11px;font-weight:600">${chg>=0?'+':''}${chg}%</div>
+        <div style="font-size:10px;color:var(--muted)">${vol}</div>
+        <div style="font-size:10px;color:var(--muted)">$${p.price}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectPair(pair,idx){
+  selectedPair=pair;
+  document.querySelectorAll('.pair-btn').forEach(el=>el.classList.remove('selected'));
+  const el=document.getElementById('pb-'+idx);
+  if(el) el.classList.add('selected');
+  document.getElementById('pair-input').value='';
+  document.getElementById('analyze-btn').disabled=false;
+  document.getElementById('analyze-status').textContent='Selected: '+pair;
+}
+
+function analyzeManual(){
+  const val=document.getElementById('pair-input').value.trim().toUpperCase();
+  if(!val) return;
+  selectedPair=val.includes('/')?val:val+'/USDT';
+  document.getElementById('analyze-btn').disabled=false;
+  document.getElementById('analyze-status').textContent='Manual: '+selectedPair;
+  document.querySelectorAll('.pair-btn').forEach(el=>el.classList.remove('selected'));
+  startAnalysis();
+}
+
+// ── Analysis ────────────────────────────────────────
+async function startAnalysis(){
+  if(!selectedPair){ alert('Select a pair first.'); return; }
+  setAnalysisBusy(true,selectedPair);
+  showAnalyzing();
+  try{
+    const r=await fetch('/api/analyze',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pair:selectedPair})
+    });
+    const d=await r.json();
+    if(d.error){ setAnalysisBusy(false); onNoSignal({reason:d.error}); }
+  }catch(e){
+    setAnalysisBusy(false);
+    onNoSignal({reason:'Network error: '+e.message});
+  }
+}
+
+function setAnalysisBusy(busy,pair=''){
+  const btn=document.getElementById('analyze-btn');
+  const st=document.getElementById('analyze-status');
+  btn.disabled=busy;
+  btn.innerHTML=busy?'<span class="spinner"></span> ANALYZING...':'⚡ ANALYZE SELECTED PAIR';
+  st.textContent=busy&&pair?'Analyzing '+pair+'...':'';
+}
+
+// ── Signal Display ──────────────────────────────────
+function onSignal(d){
+  currentSignal=d;
+  setAnalysisBusy(false);
+  showSignal(d);
+  updateStatusBar(d);
+  if(d.liquidity_above) document.getElementById('kl-liq-above').textContent=d.liquidity_above;
+  if(d.liquidity_below) document.getElementById('kl-liq-below').textContent=d.liquidity_below;
+  if(d.ob_zone&&Array.isArray(d.ob_zone)){
+    document.getElementById('kl-ob-hi').textContent=d.ob_zone[1]||'—';
+    document.getElementById('kl-ob-lo').textContent=d.ob_zone[0]||'—';
+  }
+  if(window.innerWidth<=1100) switchTab('signal');
+}
+
+function showSignal(d){
+  hide('state-idle'); hide('state-analyzing'); hide('state-no-signal'); show('state-signal');
+
+  const dir  =(d.direction||'none').toLowerCase();
+  const mode =(d.mode||'').toLowerCase();
+  const et   =(d.entry_type||'').toLowerCase();
+  const conf  = d.confidence||0;
+  const score = d.score||0;
+  const grade = d.grade||'—';
+  const gradeColor={'ELITE':'var(--green)','STRONG':'var(--cyan)','STANDARD':'var(--amber)','WEAK':'var(--muted)'};
+  const gc = gradeColor[grade]||'var(--muted)';
+  const sc = score>=95?'var(--green)':score>=85?'var(--cyan)':score>=75?'var(--amber)':'var(--muted)';
+
+  document.getElementById('sig-pair-label').textContent=d.pair||'—';
+
+  const dirEl=document.getElementById('sig-direction');
+  dirEl.textContent=dir.toUpperCase();
+  dirEl.className='sig-dir sig-'+(dir==='long'?'long':dir==='short'?'short':'none');
+
+  document.getElementById('sig-mode-badge').textContent=mode.toUpperCase();
+  document.getElementById('sig-mode-badge').className='badge badge-'+(mode||'none');
+
+  // Badges row — include diamond if present
+  const badges=document.getElementById('sig-badges');
+  const etBadge=et==='sniper'?'badge-sniper':et==='strong'?'badge-strong':'badge-standard';
+  const hasDiamond = d.diamond&&d.diamond.exists;
+  badges.innerHTML=[
+    `<span class="badge badge-${dir}">${dir.toUpperCase()}</span>`,
+    `<span class="badge ${etBadge}">${et.toUpperCase()}</span>`,
+    hasDiamond?`<span class="badge" style="color:var(--amber);border-color:var(--amber);background:rgba(255,171,0,.1)">⬡ DIAMOND</span>`:'',
+    `<span class="badge" style="color:${gc};border-color:${gc}">${grade}</span>`,
+  ].filter(Boolean).join('');
+
+  // Score bar (replaces plain confidence)
+  document.getElementById('sig-conf-num').textContent=score+'/100';
+  const bar=document.getElementById('sig-conf-bar');
+  bar.style.width=score+'%';
+  bar.style.background=sc;
+
+  // ── Entry condition banner ──
+  const ec      = d.entry_condition || 'LIMIT_WAIT';
+  const banner  = document.getElementById('entry-condition-banner');
+  const noteBox = document.getElementById('entry-note-box');
+
+  if(ec === 'LIMIT_NOW'){
+    banner.style.display  = '';
+    banner.textContent    = '✅ PRICE INSIDE ZONE — ENTER LIMIT ORDER NOW';
+    banner.style.background = 'rgba(0,230,118,.08)';
+    banner.style.color      = 'var(--green)';
+    banner.style.borderColor= 'var(--green)';
+  } else if(ec === 'LIMIT_WAIT'){
+    banner.style.display  = '';
+    banner.textContent    = '⏳ WAITING FOR RETRACE — PLACE LIMIT ORDER NOW, WAIT FOR FILL';
+    banner.style.background = 'rgba(255,171,0,.08)';
+    banner.style.color      = 'var(--amber)';
+    banner.style.borderColor= 'var(--amber)';
+  } else {
+    banner.style.display  = '';
+    banner.textContent    = '⚠️ MARKET ENTRY — NO CLEAN ZONE (USE CAUTION)';
+    banner.style.background = 'rgba(255,59,85,.08)';
+    banner.style.color      = 'var(--red)';
+    banner.style.borderColor= 'var(--red)';
+  }
+
+  if(d.entry_note){
+    noteBox.style.display = '';
+    noteBox.textContent   = '📍 ' + d.entry_note;
+  } else {
+    noteBox.style.display = 'none';
+  }
+
+  // ── Price levels ──
+  document.getElementById('sl-entry').textContent    = d.entry    || '—';
+  const ez = d.ob_zone;
+  document.getElementById('sl-entry-zone').textContent =
+    ez && ez.length === 2 ? `${ez[0]} – ${ez[1]}` : '—';
+  const distCmp = d.dist_from_entry;
+  const distEl  = document.getElementById('sl-dist-cmp');
+  if(distCmp !== undefined && distCmp !== null){
+    distEl.textContent = distCmp === 0 ? 'Inside zone' : `${distCmp.toFixed(3)}% away`;
+    distEl.style.color = distCmp < 0.5 ? 'var(--green)' : 'var(--amber)';
+  } else {
+    distEl.textContent = '—';
+  }
+  document.getElementById('sl-sl').textContent       = d.stop_loss || '—';
+  document.getElementById('sl-dist').textContent     = d.sl_dist   ? d.sl_dist + '%' : '—';
+  document.getElementById('sl-hard-inv').textContent = d.hard_invalidation || '—';
+  document.getElementById('sl-soft-warn').textContent= d.soft_warning || '—';
+
+  document.getElementById('sig-tp1').textContent=d.tp1||'—';
+  document.getElementById('sig-tp2').textContent=d.tp2||'—';
+  document.getElementById('sig-tp3').textContent=d.tp3||'—';
+
+  // Risk — now uses score-scaled values from backend
+  document.getElementById('risk-lev').textContent    = d.leverage   ? d.leverage+'x'      : '—';
+  document.getElementById('risk-margin').textContent = d.margin_usdt? '$'+d.margin_usdt    : '—';
+  document.getElementById('risk-rr').textContent     = d.rr         ? '1:'+d.rr            : '—';
+  document.getElementById('risk-amount').textContent = d.risk_amount_usdt
+    ? '$'+d.risk_amount_usdt
+    : (d.margin_usdt ? '$'+(d.margin_usdt*0.015).toFixed(2) : '—');
+
+  // Risk label badge
+  const rlEl = document.getElementById('risk-label');
+  if(rlEl){
+    rlEl.textContent = d.risk_label||d.grade||'—';
+    rlEl.style.color = gc;
+  }
+
+  // SMC trigger
+  const trigEl = document.getElementById('smc-trigger');
+  if(trigEl) trigEl.textContent = (d.smc_trigger||'—').replace(/_/g,' ');
+
+  // Score breakdown bars (85/15 system)
+  const bd = d.score_breakdown||{};
+  setCf('cf-structure','cf-s-v',   bd.structure||0,     25);
+  setCf('cf-sweep',    'cf-sw-v',  bd.sweep||0,         20);
+  setCf('cf-ob',       'cf-ob-v',  bd.order_blocks||0,  15);
+  setCf('cf-fvg',      'cf-fvg-v', bd.fvg||0,           10);
+  setCf('cf-sd',       'cf-sd-v',  bd.supply_demand||0, 15);
+  setCf('cf-ind',      'cf-ind-v', bd.indicators||0,    15);
+
+  // Diamond zone details
+  const dz = d.diamond||{};
+  const dzEl = document.getElementById('diamond-zone-row');
+  if(dzEl){
+    if(dz.exists){
+      dzEl.style.display='';
+      const dzDetail = document.getElementById('diamond-zone-detail');
+      if(dzDetail) dzDetail.textContent =
+        `⬡ ${(dz.components||[]).join('+')} | ${dz.low} – ${dz.high}`;
+    } else {
+      dzEl.style.display='none';
+    }
+  }
+
+  document.getElementById('sig-reasoning').textContent=d.reasoning||'—';
+
+  // Monitor panel pre-fill
+  document.getElementById('mon-pair').textContent  =d.pair||'—';
+  document.getElementById('mon-dir').textContent   =(d.direction||'—').toUpperCase();
+  document.getElementById('mon-dir').style.color   =dir==='long'?'var(--green)':dir==='short'?'var(--red)':'var(--white)';
+  document.getElementById('mon-entry').textContent =d.entry||'—';
+  document.getElementById('mon-sl').textContent    =d.stop_loss||'—';
+
+  if(d.pair) startPricePoller(d.pair);
+}
+
+function setCf(barId,valId,value,max){
+  document.getElementById(barId).style.width=Math.min(value/max*100,100)+'%';
+  document.getElementById(valId).textContent=Math.round(value)+'/'+max;
+}
+
+function onNoSignal(d){
+  setAnalysisBusy(false);
+  hide('state-idle'); hide('state-analyzing'); hide('state-signal'); show('state-no-signal');
+  document.getElementById('no-signal-reason').textContent=d.reason||'SMC conditions not met.';
+  document.getElementById('ns-reason').textContent=d.reason||'—';
+  document.getElementById('sig-mode-badge').textContent='NO SETUP';
+  document.getElementById('sig-mode-badge').className='badge badge-none';
+}
+
+// ── Monitor ─────────────────────────────────────────
+function onMonitor(d){
+  inTrade=true; showMonitorActive();
+  const pos=d.pnl_pct>=0;
+
+  const cmpEl=document.getElementById('mon-cmp');
+  const pnlEl=document.getElementById('mon-pnl');
+  if(cmpEl) cmpEl.textContent=d.price||'—';
+  if(pnlEl){
+    pnlEl.textContent=`${pos?'+':''}${(d.pnl_pct||0).toFixed(2)}% ($${pos?'+':''}${(d.pnl_usdt||0).toFixed(2)})`;
+    pnlEl.className=pos?'pnl-pos':'pnl-neg';
+    pnlEl.style.fontFamily='var(--font-ui)';
+    pnlEl.style.fontWeight='700';
+  }
+
+  const st=d.status||'HOLD';
+  const sb=document.getElementById('mon-status-badge');
+  if(sb){
+    sb.textContent=st.replace('_',' ');
+    sb.className='mon-status '+(st==='HOLD'?'st-hold':st==='CLOSE_WARNING'?'st-close-warn':'st-close-now');
+  }
+
+  if(d.rsi_1h) document.getElementById('mon-rsi').textContent=d.rsi_1h;
+  if(d.trend_1h){
+    const te=document.getElementById('mon-trend');
+    te.textContent=d.trend_1h.toUpperCase();
+    te.style.color=d.trend_1h==='bullish'?'var(--green)':d.trend_1h==='bearish'?'var(--red)':'var(--muted)';
+  }
+  if(d.cycle){
+    document.getElementById('mon-cycles').textContent=d.cycle;
+    document.getElementById('sb-cycles').textContent=d.cycle;
+  }
+  if(d.be_moved) document.getElementById('mon-be').textContent=d.be_moved?'✅ YES':'—';
+
+  const tpEl=document.getElementById('mon-tp-hits');
+  if(d.tp_hits&&d.tp_hits.length>0){ tpEl.style.display='block'; tpEl.textContent='🎯 '+d.tp_hits.join(', ')+' HIT!'; }
+
+  const wEl=document.getElementById('mon-warnings');
+  if(d.soft_warnings&&d.soft_warnings.length>0){
+    wEl.style.display='block'; wEl.innerHTML=d.soft_warnings.join('<br>');
+  } else { wEl.style.display='none'; }
+
+  document.getElementById('sb-pnl').textContent=`${pos?'+':''}${(d.pnl_pct||0).toFixed(2)}%`;
+  document.getElementById('sb-pnl').style.color=pos?'var(--green)':'var(--red)';
+  document.getElementById('sb-cmp').textContent=d.price||'—';
+
+  if(window.innerWidth<=1100) switchTab('monitor');
+}
+
+// ── Enter Trade ──────────────────────────────────────
+async function enterTrade(){
+  try{
+    const r=await fetch('/api/enter_trade',{method:'POST'});
+    const d=await r.json();
+    if(d.error){ alert(d.error); return; }
+    inTrade=true; showMonitorActive();
+    if(currentSignal) loadTradeFromState(currentSignal);
+  }catch(e){ alert('Error: '+e.message); }
+}
+
+function loadTradeFromState(st){
+  if(st.pair)      document.getElementById('mon-pair').textContent=st.pair;
+  if(st.direction){
+    const d=(st.direction||'').toLowerCase();
+    document.getElementById('mon-dir').textContent=d.toUpperCase();
+    document.getElementById('mon-dir').style.color=d==='long'?'var(--green)':d==='short'?'var(--red)':'var(--white)';
+  }
+  if(st.entry)     document.getElementById('mon-entry').textContent=st.entry;
+  if(st.stop_loss) document.getElementById('mon-sl').textContent=st.stop_loss;
+}
+
+// ── Price Poller ─────────────────────────────────────
+function startPricePoller(pair){
+  stopPricePoller();
+  pricePoller=setInterval(async()=>{
+    try{
+      const r=await fetch(`/api/live_price?pair=${encodeURIComponent(pair)}`);
+      const d=await r.json();
+      if(d.price){
+        document.getElementById('sb-cmp').textContent=d.price;
+        document.getElementById('mon-cmp').textContent=d.price;
+        if(inTrade&&d.pnl_pct!==undefined){
+          const pos=d.pnl_pct>=0;
+          const pEl=document.getElementById('mon-pnl');
+          if(pEl){
+            pEl.textContent=`${pos?'+':''}${d.pnl_pct.toFixed(2)}% ($${pos?'+':''}${d.pnl_usdt.toFixed(2)})`;
+            pEl.className=pos?'pnl-pos':'pnl-neg';
+          }
+          document.getElementById('sb-pnl').textContent=`${pos?'+':''}${d.pnl_pct.toFixed(2)}%`;
+          document.getElementById('sb-pnl').style.color=pos?'var(--green)':'var(--red)';
+        }
+      }
+    }catch(_){}
+  },10000);
+}
+function stopPricePoller(){ if(pricePoller){clearInterval(pricePoller);pricePoller=null;} }
+
+// ── Status Bar ───────────────────────────────────────
+function updateStatusBar(d){
+  document.getElementById('sb-pair').textContent  =d.pair||'—';
+  document.getElementById('sb-mode').textContent  =(d.mode||'—').toUpperCase();
+  document.getElementById('sb-entry').textContent =d.entry||'—';
+  document.getElementById('sb-sl').textContent    =d.stop_loss||'—';
+  document.getElementById('sb-conf').textContent  =d.confidence?d.confidence+'%':'—';
+}
+function clearStatusBar(){
+  ['sb-pair','sb-cmp','sb-pnl','sb-mode','sb-entry','sb-sl','sb-conf'].forEach(id=>{
+    const el=document.getElementById(id); if(el){el.textContent='—';el.style.color='';}
+  });
+  document.getElementById('sb-cycles').textContent='0';
+}
+
+// ── Reset ────────────────────────────────────────────
+async function resetSystem(){
+  if(!confirm('Reset system? Clears all trade state and cache.')) return;
+  try{ await fetch('/api/reset',{method:'POST'}); }catch(e){}
+}
+
+// ── UI State Helpers ─────────────────────────────────
+function showIdle()     { show('state-idle'); hide('state-analyzing'); hide('state-no-signal'); hide('state-signal');
+                          document.getElementById('sig-mode-badge').textContent='WAITING';
+                          document.getElementById('sig-mode-badge').className='badge badge-none'; }
+function showAnalyzing(){ hide('state-idle'); show('state-analyzing'); hide('state-no-signal'); hide('state-signal'); }
+function showMonitorActive(){ document.getElementById('monitor-idle').style.display='none';
+                              document.getElementById('monitor-active').style.display='flex'; }
+function showMonitorIdle()  { document.getElementById('monitor-idle').style.display='block';
+                              document.getElementById('monitor-active').style.display='none'; }
+function show(id){ document.getElementById(id).style.display=''; }
+function hide(id){ document.getElementById(id).style.display='none'; }
+
+// ── Mobile Tabs ──────────────────────────────────────
+function switchTab(tab){
+  document.querySelectorAll('.mob-tab').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  const map={pairs:'tab-pairs',signal:'tab-signal',monitor:'tab-monitor'};
+  const btn=document.querySelector(`[onclick="switchTab('${tab}')"]`);
+  if(btn) btn.classList.add('active');
+  const panel=document.getElementById(map[tab]);
+  if(panel) panel.classList.add('active');
+}
+
+// ── Initial State ────────────────────────────────────
+async function loadInitialState(){
+  try{
+    const r=await fetch('/api/status');
+    const d=await r.json();
+    if(d.server_ip)    document.getElementById('tb-ip').textContent=d.server_ip;
+    if(d.account_size) document.getElementById('tb-acct').textContent='$'+d.account_size;
+    const ts=d.trade_state;
+    if(ts){
+      if(ts.in_trade){ inTrade=true; loadTradeFromState(ts); showMonitorActive(); if(ts.pair) startPricePoller(ts.pair); }
+      else if(ts.active&&ts.entry) onSignal(ts);
+    }
+  }catch(e){ console.warn('Initial load:',e); }
+
+  try{
+    const r=await fetch('/api/wallet');
+    const d=await r.json();
+    if(d.total!==undefined) document.getElementById('tb-bal').textContent='$'+d.total.toFixed(2);
+  }catch(_){}
+}
+
+loadInitialState();
+connectWS();
+</script>
+</body>
+</html>
