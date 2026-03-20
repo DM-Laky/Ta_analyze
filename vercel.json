@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "buildCommand": "npm install",
+  "outputDirectory": "public",
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 10
+    }
+  },
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },
+    { "src": "/(.*)", "dest": "/public/index.html" }
+  ],
+  "env": {
+    "BINANCE_API_KEY":    "@binance_api_key",
+    "BINANCE_API_SECRET": "@binance_api_secret",
+    "GEMINI_API_KEY":     "@gemini_api_key",
+    "KV_REST_API_URL":    "@kv_rest_api_url",
+    "KV_REST_API_TOKEN":  "@kv_rest_api_token"
+  }
+}
