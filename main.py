@@ -18,7 +18,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from engine import ExchangeManager, run_full_analysis, calculate_risk
+from engine import (ExchangeManager, run_full_analysis, calculate_risk,
+                    smart_screen_pairs, score_grade, score_to_risk)
 from ai import GeminiAnalyst
 from monitor import TradeMonitor
 from state import (
