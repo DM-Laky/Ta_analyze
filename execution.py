@@ -54,6 +54,7 @@ Public API
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import json
 import logging
@@ -433,6 +434,82 @@ async def _cancel_order_safe(
         logger.debug("cancel_order %s %s: %s", symbol, order_id, exc)
 
 
+async def _place_protection_orders(
+    exchange:    ccxt.binance,
+    rec:         "TradeRecord",
+    fill_px:     float,
+) -> None:
+    """
+    Place SL + TP3 (90% qty) immediately after a fill is detected.
+    TP3 is RECALCULATED from the actual fill price to guarantee exact $3.00
+    profit ($1.50 risk × 2:1 R:R), regardless of the signal's TP estimate.
+    Writes updated order IDs to the TradeRecord and saves it.
+    """
+    sign = 1 if rec.direction == "LONG" else -1
+
+    # ── SL (full qty) ─────────────────────────────────────────────────────
+    sl_oid = await _place_sl_order(
+        exchange, rec.symbol, rec.direction, rec.stop_loss, rec.qty
+    )
+    rec.sl_order_id = sl_oid
+
+    # ── TP3: recalculated from fill_px for guaranteed 1:2 R:R (→ $3.00) ──
+    risk_dist = abs(fill_px - rec.stop_loss)
+    tp3_exact = fill_px + sign * 2.0 * risk_dist
+    tp3_price = float(exchange.price_to_precision(rec.symbol, tp3_exact))
+    rec.tp3   = tp3_price   # keep record accurate
+
+    tp3_qty = float(
+        exchange.amount_to_precision(rec.symbol, rec.qty * TP3_PARTIAL_CLOSE_PCT)
+    )
+    tp3_oid = await _place_tp_order(
+        exchange, rec.symbol, rec.direction, tp3_price, tp3_qty
+    )
+    rec.tp3_order_id = tp3_oid
+
+    logger.info(
+        "PROTECTION PLACED  %s  fill=%.6f  SL_id=%s  TP3=%.6f  TP3_id=%s",
+        rec.symbol, fill_px, sl_oid, tp3_price, tp3_oid,
+    )
+
+
+async def _fast_fill_monitor(
+    symbol:   str,
+    order_id: str,
+) -> None:
+    """
+    Background task: polls for fill every 2 s for up to 30 s.
+    If the limit order fills before monitor_trades() next runs,
+    SL + TP3 are placed immediately — position is NEVER unprotected.
+    After 30 s this task exits; the regular 15-s execution_loop takes over.
+    """
+    try:
+        exchange = await _get_auth_exchange()
+        for _ in range(15):   # 15 × 2 s = 30 s max
+            await asyncio.sleep(2)
+            pending = _load_by_status("PENDING")
+            rec = next((r for r in pending if r.order_id == order_id), None)
+            if rec is None:
+                return   # already handled by execution_loop or cancelled
+            try:
+                order = await exchange.fetch_order(order_id, symbol)
+                if str(order.get("status", "")).lower() == "closed":
+                    fill_px = float(order.get("average") or order.get("price")
+                                    or rec.entry_price)
+                    rec.entry_price = fill_px
+                    rec.filled_ts   = time.time()
+                    rec.status      = "LIVE"
+                    await _place_protection_orders(exchange, rec, fill_px)
+                    _save_trade(rec)
+                    logger.info("FAST FILL  %s @ %.6f  orders protected",
+                                symbol, fill_px)
+                    return
+            except Exception as exc:
+                logger.debug("fast_fill_monitor %s: %s", symbol, exc)
+    except Exception as exc:
+        logger.debug("_fast_fill_monitor outer %s: %s", symbol, exc)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # BTC crash helper (public data, no auth required)
 # ─────────────────────────────────────────────────────────────────────
@@ -523,6 +600,13 @@ async def place_trade(signal: SniperSignal) -> Optional[TradeRecord]:
         margin_cost = round((qty * entry_price) / TARGET_LEVERAGE, 4)
         order_id    = str(order["id"])
 
+        # Recalculate TP3 from entry price for guaranteed 1:2 R:R ($3.00)
+        sign_dir    = 1 if signal.direction == "LONG" else -1
+        risk_dist   = abs(entry_price - sl_price)
+        tp3_exact   = float(exchange.price_to_precision(
+            signal.symbol, entry_price + sign_dir * 2.0 * risk_dist
+        ))
+
         rec = TradeRecord(
             symbol      = signal.symbol,
             direction   = signal.direction,
@@ -532,7 +616,7 @@ async def place_trade(signal: SniperSignal) -> Optional[TradeRecord]:
             stop_loss   = sl_price,
             tp1         = tp1_price,
             tp2         = tp2_price,
-            tp3         = tp3_price,
+            tp3         = tp3_exact,
             tp6         = tp6_price,
             qty         = qty,
             leverage    = TARGET_LEVERAGE,
@@ -544,10 +628,14 @@ async def place_trade(signal: SniperSignal) -> Optional[TradeRecord]:
 
         logger.info(
             "ORDER PLACED  %s %s  qty=%.6f  entry=%.6f  SL=%.6f  "
-            "TP3=%.6f  TP6=%.6f  margin=$%.4f",
+            "TP3=%.6f (1:2 R:R)  TP6=%.6f  margin=$%.4f",
             signal.symbol, signal.direction,
-            qty, entry_price, sl_price, tp3_price, tp6_price, margin_cost,
+            qty, entry_price, sl_price, tp3_exact, tp6_price, margin_cost,
         )
+
+        # Launch fast fill monitor — protects position within 2 s of fill
+        asyncio.create_task(_fast_fill_monitor(signal.symbol, order_id))
+
         return rec
 
     except Exception as exc:
@@ -589,35 +677,24 @@ async def monitor_trades() -> MonitorResult:
                 os_   = str(order.get("status", "")).lower()
 
                 if os_ == "closed":
+                    # Skip if fast_fill_monitor already handled this fill
+                    if rec.status == "LIVE":
+                        result.filled.append(rec)
+                        continue
+
                     fill_px = float(order.get("average") or order.get("price")
                                     or rec.entry_price)
                     rec.entry_price = fill_px
                     rec.filled_ts   = time.time()
+                    rec.status      = "LIVE"
 
-                    # Place SL for full qty
-                    sl_oid = await _place_sl_order(
-                        exchange, rec.symbol, rec.direction,
-                        rec.stop_loss, rec.qty,
-                    )
-                    rec.sl_order_id = sl_oid
-
-                    # Place TP3 for 90% qty
-                    tp3_qty = float(
-                        exchange.amount_to_precision(
-                            rec.symbol, rec.qty * TP3_PARTIAL_CLOSE_PCT
-                        )
-                    )
-                    tp3_oid = await _place_tp_order(
-                        exchange, rec.symbol, rec.direction,
-                        rec.tp3, tp3_qty,
-                    )
-                    rec.tp3_order_id = tp3_oid
-                    rec.status       = "LIVE"
+                    await _place_protection_orders(exchange, rec, fill_px)
                     _save_trade(rec)
                     result.filled.append(rec)
                     logger.info(
-                        "ORDER FILLED  %s @ %.6f  SL_id=%s  TP3_id=%s",
-                        rec.symbol, fill_px, sl_oid, tp3_oid,
+                        "ORDER FILLED  %s @ %.6f  SL_id=%s  TP3=%.6f  TP3_id=%s",
+                        rec.symbol, fill_px, rec.sl_order_id,
+                        rec.tp3, rec.tp3_order_id,
                     )
                     continue
 

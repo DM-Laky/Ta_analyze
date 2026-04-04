@@ -39,7 +39,7 @@ FVG_PARTIAL_FILL_PCT = 0.30      # 30% fill = price respecting zone (valid POI)
 FVG_MITIGATION_PCT = 0.40        # 40% CE fill = mitigated (dead zone) — used as gap_mid
 
 # ── Pro Entry & Anti-Fake-CHoCH Constants ──────────────────────────
-ENTRY_RETRACE        = 0.40    # 40% retrace entry from CHoCH toward sweep extreme
+ENTRY_RETRACE        = 0.30    # 30% retrace entry from CHoCH toward sweep extreme (0.70 Fib)
 SL_BUFFER_PCT        = 0.00175 # 0.175% buffer below/above sweep wick (double-sweep guard)
 CHOCH_MIN_CANDLE_GAP = 2       # min candles between sweep recovery and CHoCH
 CHOCH_BREAK_MARGIN   = 0.0005  # close must exceed prior swing level by ≥0.05%
@@ -744,11 +744,13 @@ def detect_fvgs(
                     highs, lows, i + 3, n,
                 )
 
-                # ✅ NEW: Freshness check
+                # ✅ 100% Freshness — any wick touch = invalid, discard immediately
                 fresh = _is_zone_completely_fresh(
                     "bullish", gap_high, gap_low,
                     highs, lows, i + 3, n,
                 )
+                if not fresh:
+                    continue
 
                 vol_ratio = _get_candle_volume_ratio(df, i + 1)
 
@@ -799,11 +801,13 @@ def detect_fvgs(
                     highs, lows, i + 3, n,
                 )
 
-                # ✅ Freshness
+                # ✅ 100% Freshness — any wick touch = invalid, discard immediately
                 fresh = _is_zone_completely_fresh(
                     "bearish", gap_high, gap_low,
                     highs, lows, i + 3, n,
                 )
+                if not fresh:
+                    continue
 
                 zones.append(Zone(
                     high=gap_high, low=gap_low, ob_index=i,
@@ -833,6 +837,25 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.ewm(span=period, min_periods=period).mean()
+
+
+def _dynamic_lb(df: pd.DataFrame, base: int = 5) -> int:
+    """
+    ATR-adaptive lookback: clamp(3, round(base * current_ATR / mean_ATR_20), 10).
+    High volatility  → larger lb (filters micro-noise).
+    Low  volatility  → smaller lb (catches smaller pivots).
+    Vectorised: uses NumPy on the ATR series, no Python loop.
+    """
+    atr_vals = compute_atr(df, 14).values
+    valid    = atr_vals[~np.isnan(atr_vals)]
+    if len(valid) < 2:
+        return base
+    current_atr = float(valid[-1])
+    avg_atr     = float(np.mean(valid[-20:])) if len(valid) >= 20 else float(np.mean(valid))
+    if avg_atr <= 0:
+        return base
+    raw = int(np.round(base * current_atr / avg_atr))
+    return int(np.clip(raw, 3, 10))
 
 
 def _rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
@@ -1564,6 +1587,159 @@ def score_coin(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# MOMENTUM / V-SHAPE SIGNAL — sweep + engulf candle, no CHoCH required
+# ─────────────────────────────────────────────────────────────────────
+
+MOMENTUM_BODY_PCT  = 0.70   # candle body must be ≥ 70% of high-low range
+MOMENTUM_VOL_MULT  = 1.50   # candle volume must be ≥ 1.5× 20-bar avg
+MOMENTUM_RETRACE   = 0.30   # limit entry at 30% retrace from candle extreme
+
+
+def build_momentum_signal(
+    symbol:       str,
+    direction:    str,                # "bullish" | "bearish"
+    df_ltf:       pd.DataFrame,       # 5m or 1m OHLCV, ≥ 30 candles
+    sweep_idx:    int,                # candle index of the confirmed sweep
+    htf_poi_high: float,
+    htf_poi_low:  float,
+) -> Optional["SniperSignal"]:
+    """
+    V-Shape / Momentum Entry — triggered WITHOUT waiting for a CHoCH.
+
+    Conditions (all must hold on the candle IMMEDIATELY after the sweep):
+      1. Body  > 70% of (high - low)
+      2. Volume > 1.5× avg(volume[-20])
+      3. Direction matches trade bias:
+           bullish sweep → bullish engulf (close > open)
+           bearish sweep → bearish engulf (close < open)
+
+    Entry (30% retrace from candle extreme — NumPy vectorised):
+      LONG  → entry = candle_low  + (candle_high - candle_low) × 0.70
+      SHORT → entry = candle_high - (candle_high - candle_low) × 0.70
+
+    SL: 0.175% buffer beyond sweep wick extreme (identical to CHoCH path).
+    TP3: entry ± 2 × risk  →  exact $3.00 on $1.50 risk (1:2 R:R).
+    """
+    n = len(df_ltf)
+    if df_ltf is None or n < 30:
+        return None
+
+    trade_dir = "LONG" if direction == "bullish" else "SHORT"
+    sign      = 1.0 if trade_dir == "LONG" else -1.0
+
+    # Momentum candle is the bar right after the sweep
+    mc_idx = sweep_idx + 1
+    if mc_idx >= n:
+        return None
+
+    opens  = df_ltf["open"].values
+    closes = df_ltf["close"].values
+    highs  = df_ltf["high"].values
+    lows   = df_ltf["low"].values
+    vols   = df_ltf["volume"].values
+
+    mc_o = opens[mc_idx]
+    mc_c = closes[mc_idx]
+    mc_h = highs[mc_idx]
+    mc_l = lows[mc_idx]
+
+    mc_range = mc_h - mc_l
+    if mc_range <= 0:
+        return None
+
+    # ── 1. Direction check ────────────────────────────────────────────
+    if trade_dir == "LONG"  and mc_c <= mc_o:   # must be bullish candle
+        return None
+    if trade_dir == "SHORT" and mc_c >= mc_o:   # must be bearish candle
+        return None
+
+    # ── 2. Body ≥ 70% of range (vectorised single comparison) ────────
+    body = abs(mc_c - mc_o)
+    if body < MOMENTUM_BODY_PCT * mc_range:
+        return None
+
+    # ── 3. Volume > 1.5× 20-bar average (NumPy mean, no loop) ────────
+    vol_window = vols[max(0, mc_idx - 20): mc_idx]
+    if len(vol_window) == 0 or np.mean(vol_window) <= 0:
+        return None
+    if vols[mc_idx] < MOMENTUM_VOL_MULT * np.mean(vol_window):
+        return None
+
+    # ── Entry: 30% retrace from candle extreme ────────────────────────
+    if trade_dir == "LONG":
+        entry_price = mc_l + mc_range * (1.0 - MOMENTUM_RETRACE)   # 0.70 level
+    else:
+        entry_price = mc_h - mc_range * (1.0 - MOMENTUM_RETRACE)   # 0.70 level
+
+    spread      = entry_price * 0.0005
+    entry_high  = entry_price + spread
+    entry_low   = entry_price - spread
+
+    # ── SL: 0.175% buffer beyond sweep wick ──────────────────────────
+    atr_series  = compute_atr(df_ltf, 14)
+    atr_val     = float(atr_series.iloc[-1]) if not np.isnan(atr_series.iloc[-1]) else 0.0
+
+    if trade_dir == "LONG":
+        sl_extreme = float(lows[sweep_idx])
+        sl_buffer  = max(atr_val * 0.5, sl_extreme * SL_BUFFER_PCT)
+        sl         = sl_extreme - sl_buffer
+    else:
+        sl_extreme = float(highs[sweep_idx])
+        sl_buffer  = max(atr_val * 0.5, sl_extreme * SL_BUFFER_PCT)
+        sl         = sl_extreme + sl_buffer
+
+    risk = abs(entry_price - sl)
+    if risk < 1e-12:
+        return None
+    if trade_dir == "LONG"  and sl >= entry_price:
+        return None
+    if trade_dir == "SHORT" and sl <= entry_price:
+        return None
+
+    # ── TPs: TP3 at exact 1:2 R:R ────────────────────────────────────
+    tp1 = entry_price + sign * risk * 1.0
+    tp2 = entry_price + sign * risk * 1.5
+    tp3 = entry_price + sign * risk * 2.0   # $3.00 on $1.50 risk
+    tp4 = entry_price + sign * risk * 4.0
+    tp5 = entry_price + sign * risk * 6.0
+    tp6 = entry_price + sign * risk * 8.0
+
+    risk_usd      = 1.50
+    position_size = round(risk_usd / risk, 4) if risk > 0 else 0.0
+    rr            = round(abs(tp3 - entry_price) / risk, 2)
+
+    confluences = [
+        f"HTF POI: {htf_poi_low:.6f} – {htf_poi_high:.6f}",
+        f"⚡ V-SHAPE: Sweep idx={sweep_idx} extreme={sl_extreme:.6f}",
+        f"Momentum candle idx={mc_idx}: body={body:.6f} ({body/mc_range*100:.0f}% of range)",
+        f"Volume ratio: {vols[mc_idx]/np.mean(vol_window):.2f}× avg20",
+        f"30% Retrace Entry: {entry_price:.6f} [{entry_low:.6f} – {entry_high:.6f}]",
+        f"Buffered SL: {sl:.6f} (buffer={sl_buffer:.6f})",
+        f"ATR: {atr_val:.6f}",
+        f"R:R = 1:{rr} | NO CHoCH — Momentum path",
+    ]
+
+    return SniperSignal(
+        symbol        = symbol,
+        direction     = trade_dir,
+        entry_high    = round(entry_high, 6),
+        entry_low     = round(entry_low,  6),
+        stop_loss     = round(sl, 6),
+        tp1           = round(tp1, 6),
+        tp2           = round(tp2, 6),
+        tp3           = round(tp3, 6),
+        tp4           = round(tp4, 6),
+        tp5           = round(tp5, 6),
+        tp6           = round(tp6, 6),
+        risk_reward   = rr,
+        position_size = position_size,
+        risk_usd      = risk_usd,
+        confluences   = confluences,
+        order_type    = "LIMIT",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # SNIPER SIGNAL — R:R filter, LTF opposing zones, limit order
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1577,34 +1753,33 @@ def build_sniper_signal(
     df_1h: pd.DataFrame,
 ) -> Optional[SniperSignal]:
     """
-    LTF Scalp Sniper — 40% Retrace Entry + 0.175% Double-Sweep SL Buffer.
+    LTF Scalp Sniper — 30% Retrace Entry (0.70 Fib) + 0.175% Double-Sweep SL Buffer.
 
-    Entry Logic (40% retrace):
-      After Sweep + CHoCH, enter at the 40% retrace of the displacement leg.
-      Outer edge = closest to current market = highest-probability immediate fill.
-        LONG:  leg = [sweep_wick_low  → CHoCH_close]
-               entry = CHoCH_close - 0.40 × (CHoCH_close - sweep_low)
-        SHORT: leg = [sweep_wick_high → CHoCH_close]
-               entry = CHoCH_close + 0.40 × (sweep_high - CHoCH_close)
+    Entry Logic (30% retrace = 0.70 Fibonacci level):
+      After Sweep + CHoCH, enter at the 30% retrace of the displacement leg.
+      More aggressive than 40% — higher fill rate on fast V-shape moves.
+        LONG:  entry = CHoCH_close - 0.30 × (CHoCH_close - sweep_low)
+        SHORT: entry = CHoCH_close + 0.30 × (sweep_high - CHoCH_close)
+      Lookback `lb` is DYNAMIC: clamp(3, round(5 * cur_ATR / avg_ATR_20), 10).
 
     SL Logic (0.175% double-sweep buffer):
       SL placed beyond sweep wick extreme + max(0.5×ATR, 0.175% of wick price).
-      Absorbs double-sweep attempts without exceeding the $1.50 risk budget.
 
-    R:R (primary target = TP3):
+    R:R (primary target = TP3, exact 1:2):
       risk  = abs(entry_price - buffered_sl)  ← always positive
       sign  = +1 (LONG) or -1 (SHORT)
-      TP1   = entry + sign * risk * 1.0
-      TP3   = entry + sign * risk * 3.0  ← 90% close ($3.00 on $1.50 risk)
-      TP6   = entry + sign * risk * 8.0  ← runner 10%
+      TP1   = entry + sign * risk * 1.0  (1:1  — $1.50)
+      TP3   = entry + sign * risk * 2.0  (1:2  — $3.00, 90% close = $2.70)
+      TP4-6 = runner targets anchored to 1H swing levels
     """
     trade_dir = "LONG" if direction == "bullish" else "SHORT"
     sweep_dir = direction   # "bullish" or "bearish"
     sign      = 1.0 if trade_dir == "LONG" else -1.0
 
-    for label, df_ltf, lb in [("5m", df_5m, 2), ("1m", df_1m, 1)]:
+    for label, df_ltf in [("5m", df_5m), ("1m", df_1m)]:
         if df_ltf is None or len(df_ltf) < 20:
             continue
+        lb = _dynamic_lb(df_ltf)
 
         swings = detect_swing_points(df_ltf, lb)
         if not swings:
@@ -1682,20 +1857,20 @@ def build_sniper_signal(
         if trade_dir == "SHORT" and sl <= entry_mid:
             continue
 
-        # ── 6-Target Moonshot TPs ────────────────────────────────────
-        tp1 = entry_mid + sign * risk * 1.0   # 1:1
-        tp2 = entry_mid + sign * risk * 2.0   # 1:2
-        tp3 = entry_mid + sign * risk * 3.0   # 1:3
-        tp4 = entry_mid + sign * risk * 4.0   # 1:4
-        tp5 = entry_mid + sign * risk * 6.0   # 1:6
+        # ── TPs: TP3 at exact 1:2 R:R (→ $3.00 on $1.50 risk) ─────────────────
+        tp1 = entry_mid + sign * risk * 1.0   # 1:1 — $1.50
+        tp2 = entry_mid + sign * risk * 1.5   # 1:1.5
+        tp3 = entry_mid + sign * risk * 2.0   # 1:2 — $3.00 (primary, 90% close)
+        tp4 = entry_mid + sign * risk * 4.0   # 1:4 runner
+        tp5 = entry_mid + sign * risk * 6.0   # 1:6 runner
         tp6 = entry_mid + sign * risk * 8.0   # 1:8 runner
 
         # Sanity guard: all TPs must be on the correct side of entry
         if trade_dir == "LONG":
-            if not (entry_mid < tp1 < tp2 < tp3 < tp4 < tp5 < tp6):
+            if not (entry_mid < tp1 < tp3 < tp4 < tp5 < tp6):
                 continue
         else:
-            if not (entry_mid > tp1 > tp2 > tp3 > tp4 > tp5 > tp6):
+            if not (entry_mid > tp1 > tp3 > tp4 > tp5 > tp6):
                 continue
 
         # Anchor TP4-6 to 1H swing levels (never move them against us)
@@ -1737,7 +1912,7 @@ def build_sniper_signal(
             f"Liq Sweep on {label} idx={sweep.sweep_index} "
             f"extreme={sl_extreme:.6f}",
             f"Displacement leg: {leg_low:.6f} → {leg_high:.6f}",
-            f"40% Retrace Entry: {entry_price:.6f} "
+            f"30% Retrace Entry (0.70 Fib): {entry_price:.6f} "
             f"[{entry_low:.6f} – {entry_high:.6f}]",
             f"Buffered SL: {sl:.6f} (buffer={sl_buffer:.6f}, 0.175% guard)",
             f"CHoCH on {label} idx={choch.choch_index} "

@@ -29,7 +29,7 @@ import pandas as pd
 
 from execution import get_public_exchange
 from smc import (
-    SniperSignal, build_sniper_signal,
+    SniperSignal, build_sniper_signal, build_momentum_signal,
     detect_swing_points, detect_liquidity_sweeps,
 )
 
@@ -107,6 +107,31 @@ async def _fetch_ltf(
     )
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).astype(str)
     return df
+
+
+# ── Sweep index lookup (for momentum candle) ──────────────────────
+
+def _find_sweep_idx(
+    df_ltf: pd.DataFrame,
+    sweep_dir: str,
+    poi_high: float,
+    poi_low: float,
+    lb: int = 2,
+) -> int:
+    """
+    Return the index of the most recent confirmed sweep candle, or -1.
+    Used to locate the momentum candle (sweep_idx + 1) for V-shape detection.
+    """
+    swings = detect_swing_points(df_ltf, lb)
+    if not swings:
+        return -1
+    sweeps = detect_liquidity_sweeps(
+        df_ltf, swings, sweep_dir,
+        poi_high=poi_high, poi_low=poi_low,
+    )
+    if not sweeps:
+        return -1
+    return int(sweeps[0].sweep_index)
 
 
 # ── Sweep-only check (no CHoCH required) ─────────────────────────────
@@ -287,6 +312,38 @@ async def run_choch_monitor() -> List[SniperSignal]:
             if any(x is None or len(x) < 20 for x in [df_5m, df_1m, df_1h]):
                 continue
 
+            # ── Priority 1: V-Shape / Momentum entry (no CHoCH required) ─────
+            # Check the 5m frame first (highest signal quality), then 1m.
+            momentum_signal: Optional[SniperSignal] = None
+            for df_check, lb_check in [(df_5m, 2), (df_1m, 1)]:
+                sw_idx = _find_sweep_idx(
+                    df_check, direction, poi_high, poi_low, lb_check
+                )
+                if sw_idx < 0:
+                    continue
+                momentum_signal = build_momentum_signal(
+                    symbol       = symbol,
+                    direction    = direction,
+                    df_ltf       = df_check,
+                    sweep_idx    = sw_idx,
+                    htf_poi_high = poi_high,
+                    htf_poi_low  = poi_low,
+                )
+                if momentum_signal is not None:
+                    break
+
+            if momentum_signal is not None:
+                logger.info(
+                    "⚡ V-SHAPE %s %s entry=[%.6f,%.6f] SL=%.6f RR=%.2f",
+                    symbol, momentum_signal.direction,
+                    momentum_signal.entry_low, momentum_signal.entry_high,
+                    momentum_signal.stop_loss, momentum_signal.risk_reward,
+                )
+                _delete_json(fpath)
+                sniper_signals.append(momentum_signal)
+                continue   # skip CHoCH check for this coin
+
+            # ── Priority 2: Standard CHoCH-based entry ─────────────────────
             signal = build_sniper_signal(
                 symbol=symbol,
                 direction=direction,
@@ -298,7 +355,7 @@ async def run_choch_monitor() -> List[SniperSignal]:
             )
             if signal is not None:
                 logger.info(
-                    " CHoCH CONFIRMED %s %s entry=[%.6f,%.6f] SL=%.6f RR=%.2f",
+                    "🎯 CHoCH CONFIRMED %s %s entry=[%.6f,%.6f] SL=%.6f RR=%.2f",
                     symbol, signal.direction,
                     signal.entry_low, signal.entry_high,
                     signal.stop_loss, signal.risk_reward,
@@ -306,7 +363,7 @@ async def run_choch_monitor() -> List[SniperSignal]:
                 _delete_json(fpath)
                 sniper_signals.append(signal)
             else:
-                logger.debug("%s — CHoCH not confirmed yet, waiting 2 s…", symbol)
+                logger.debug("%s — no V-shape or CHoCH yet, waiting 2 s…", symbol)
 
     except Exception as exc:
         logger.warning("run_choch_monitor error: %s", exc)
