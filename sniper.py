@@ -1,16 +1,18 @@
 """
-sniper.py — 3-Stage Sniper Room (Alert-Only, HFT 10s cadence)
-=============================================================
+sniper.py — 3-Stage Sniper Room (HFT)
+=======================================
 State machine per coin:
 
   WATCHLIST_2_POI_TOUCHED  (set by watching.py)
-    ↓  sweep detected, no CHoCH yet
+    ↓  sweep detected — run_sniper() polls every 5 s
   WATCHLIST_2_SWEEP         → Alert 2 sent (🟠 Liq Sweep detected)
-    ↓  CHoCH confirmed after sweep
+    ↓  CHoCH confirmed — run_choch_monitor() polls every 2 s
   ALERT_SENT                → Alert 3 sent (sniper signal + chart)
     ↓  JSON deleted immediately
 
-Speed: fetch only last 100 candles for 5m/1m. Called every 10 seconds.
+Two public coroutines:
+  run_sniper()        — POI_TOUCHED → SWEEP detection (called every 5 s)
+  run_choch_monitor() — SWEEP → CHoCH+Signal  (called every 2 s)
 """
 
 from __future__ import annotations
@@ -20,7 +22,8 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+
+from typing import Any, List, Optional, Tuple
 
 import pandas as pd
 
@@ -87,7 +90,7 @@ def _purge_alert_sent() -> None:
 # ── Fast 100-candle LTF fetch ─────────────────────────────────────────
 
 async def _fetch_ltf(
-    exchange: ccxt.Exchange,
+    exchange: Any,
     symbol: str,
     timeframe: str,
     limit: int = 100,
@@ -143,8 +146,9 @@ def _has_recent_sweep(
 
 async def run_sniper() -> Tuple[List[dict], List[SniperSignal]]:
     """
-    Returns (sweep_alerts, sniper_signals).
-    Called every 10 seconds from main.py.
+    Process WATCHLIST_2_POI_TOUCHED entries only.
+    Detects liquidity sweeps and promotes coins to WATCHLIST_2_SWEEP.
+    Returns (sweep_alerts, []).  Called every 5 s from main.py.
     """
     _purge_alert_sent()
 
@@ -158,11 +162,13 @@ async def run_sniper() -> Tuple[List[dict], List[SniperSignal]]:
 
     try:
         for entry in entries:
+            if entry.get("status") != "WATCHLIST_2_POI_TOUCHED":
+                continue
+
             fpath     = entry.get("_path", "")
             symbol    = entry.get("symbol")
             direction = entry.get("direction")
             poi       = entry.get("htf_poi", {})
-            status    = entry.get("status", "")
 
             if not symbol or not direction or not poi:
                 _delete_json(fpath); continue
@@ -186,9 +192,7 @@ async def run_sniper() -> Tuple[List[dict], List[SniperSignal]]:
                     poi_mid = (poi_high + poi_low) / 2
                     drift   = abs(cmp_now - poi_mid) / poi_mid * 100 if poi_mid else 0
                     if drift > WL2_DRIFT_PCT:
-                        logger.info(
-                            "DRIFT %s %.1f%% → deleting", symbol, drift
-                        )
+                        logger.info("DRIFT %s %.1f%% → deleting", symbol, drift)
                         _delete_json(fpath); continue
             except Exception:
                 pass
@@ -197,69 +201,114 @@ async def run_sniper() -> Tuple[List[dict], List[SniperSignal]]:
             try:
                 df_5m = await _fetch_ltf(exchange, symbol, "5m", 100)
                 df_1m = await _fetch_ltf(exchange, symbol, "1m", 100)
-                df_1h = await _fetch_ltf(exchange, symbol, "1h", 100)
             except Exception as exc:
                 logger.warning("Fetch %s: %s", symbol, exc); continue
 
-            if any(x is None or len(x) < 20 for x in [df_5m, df_1m, df_1h]):
+            if any(x is None or len(x) < 20 for x in [df_5m, df_1m]):
                 continue
 
-            sweep_dir = direction  # "bullish" or "bearish"
-
-            # ── STAGE 1 → 2: POI_TOUCHED → check for sweep ───────────
-            if status == "WATCHLIST_2_POI_TOUCHED":
-                sweep_info = None
-                for df_ltf, lb in [(df_5m, 2), (df_1m, 1)]:
-                    found = _has_recent_sweep(
-                        df_ltf, sweep_dir, poi_high, poi_low, lb
-                    )
-                    if found:
-                        sweep_info = found
-                        break
-
-                if sweep_info:
-                    logger.info(
-                        "SWEEP %s extreme=%.6f swept=%.6f",
-                        symbol, sweep_info["wick_extreme"], sweep_info["swept_price"],
-                    )
-                    entry["status"]     = "WATCHLIST_2_SWEEP"
-                    entry["sweep_data"] = sweep_info
-                    entry["sweep_ts"]   = time.time()
-                    _save_json(fpath, entry)
-                    sweep_alerts.append({
-                        "symbol":    symbol,
-                        "direction": direction,
-                        "htf_poi":   poi,
-                        "sweep":     sweep_info,
-                    })
-                else:
-                    logger.debug("%s — no sweep yet, waiting…", symbol)
-                continue
-
-            # ── STAGE 2 → 3: SWEEP → check for CHoCH → signal ────────
-            if status == "WATCHLIST_2_SWEEP":
-                signal = build_sniper_signal(
-                    symbol=symbol,
-                    direction=direction,
-                    df_5m=df_5m,
-                    df_1m=df_1m,
-                    htf_poi_high=poi_high,
-                    htf_poi_low=poi_low,
-                    df_1h=df_1h,
+            sweep_info = None
+            for df_ltf, lb in [(df_5m, 2), (df_1m, 1)]:
+                found = _has_recent_sweep(
+                    df_ltf, direction, poi_high, poi_low, lb
                 )
-                if signal is not None:
-                    logger.info(
-                        "🎯 SIGNAL %s %s entry=[%.6f,%.6f] SL=%.6f TP1=%.6f RR=%.2f",
-                        symbol, signal.direction,
-                        signal.entry_low, signal.entry_high,
-                        signal.stop_loss, signal.tp1, signal.risk_reward,
-                    )
-                    _delete_json(fpath)
-                    sniper_signals.append(signal)
-                else:
-                    logger.debug("%s — CHoCH not confirmed yet, waiting…", symbol)
+                if found:
+                    sweep_info = found
+                    break
+
+            if sweep_info:
+                logger.info(
+                    "SWEEP %s extreme=%.6f swept=%.6f",
+                    symbol, sweep_info["wick_extreme"], sweep_info["swept_price"],
+                )
+                entry["status"]     = "WATCHLIST_2_SWEEP"
+                entry["sweep_data"] = sweep_info
+                entry["sweep_ts"]   = time.time()
+                _save_json(fpath, entry)
+                sweep_alerts.append({
+                    "symbol":    symbol,
+                    "direction": direction,
+                    "htf_poi":   poi,
+                    "sweep":     sweep_info,
+                })
+            else:
+                logger.debug("%s — no sweep yet, waiting…", symbol)
 
     except Exception as exc:
         logger.warning("run_sniper exchange error: %s", exc)
 
     return sweep_alerts, sniper_signals
+
+
+async def run_choch_monitor() -> List[SniperSignal]:
+    """
+    Ultra-fast CHoCH confirmation loop — called every 2 s from main.py.
+    Only processes WATCHLIST_2_SWEEP entries.
+    Zero entry misses: once a sweep is confirmed, CHoCH is polled every 2 s.
+    Returns a list of ready SniperSignals.
+    """
+    _purge_alert_sent()
+
+    entries = [e for e in _load_stage2() if e.get("status") == "WATCHLIST_2_SWEEP"]
+    if not entries:
+        return []
+
+    exchange        = await get_public_exchange()
+    sniper_signals: List[SniperSignal] = []
+
+    try:
+        for entry in entries:
+            fpath     = entry.get("_path", "")
+            symbol    = entry.get("symbol")
+            direction = entry.get("direction")
+            poi       = entry.get("htf_poi", {})
+
+            if not symbol or not direction or not poi:
+                _delete_json(fpath); continue
+
+            poi_high = poi.get("high")
+            poi_low  = poi.get("low")
+            if poi_high is None or poi_low is None:
+                _delete_json(fpath); continue
+
+            # Timeout check
+            entered_ts = entry.get("entered_poi_ts", entry.get("created_ts", 0))
+            if time.time() - entered_ts > WL2_TIMEOUT_SECONDS:
+                logger.info("CHoCH TIMEOUT %s → deleting", symbol)
+                _delete_json(fpath); continue
+
+            try:
+                df_5m = await _fetch_ltf(exchange, symbol, "5m", 100)
+                df_1m = await _fetch_ltf(exchange, symbol, "1m", 100)
+                df_1h = await _fetch_ltf(exchange, symbol, "1h", 100)
+            except Exception as exc:
+                logger.warning("CHoCH fetch %s: %s", symbol, exc); continue
+
+            if any(x is None or len(x) < 20 for x in [df_5m, df_1m, df_1h]):
+                continue
+
+            signal = build_sniper_signal(
+                symbol=symbol,
+                direction=direction,
+                df_5m=df_5m,
+                df_1m=df_1m,
+                htf_poi_high=poi_high,
+                htf_poi_low=poi_low,
+                df_1h=df_1h,
+            )
+            if signal is not None:
+                logger.info(
+                    " CHoCH CONFIRMED %s %s entry=[%.6f,%.6f] SL=%.6f RR=%.2f",
+                    symbol, signal.direction,
+                    signal.entry_low, signal.entry_high,
+                    signal.stop_loss, signal.risk_reward,
+                )
+                _delete_json(fpath)
+                sniper_signals.append(signal)
+            else:
+                logger.debug("%s — CHoCH not confirmed yet, waiting 2 s…", symbol)
+
+    except Exception as exc:
+        logger.warning("run_choch_monitor error: %s", exc)
+
+    return sniper_signals

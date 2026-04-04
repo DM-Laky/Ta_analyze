@@ -370,6 +370,7 @@ async def _place_sl_order(
     Returns order ID or "" on failure.
     """
     close_side = "sell" if direction == "LONG" else "buy"
+    qty = float(exchange.amount_to_precision(symbol, qty))
     try:
         order = await exchange.create_order(
             symbol, "stop_market", close_side, qty, None,
@@ -399,6 +400,7 @@ async def _place_tp_order(
     Returns order ID or "" on failure.
     """
     close_side = "sell" if direction == "LONG" else "buy"
+    qty = float(exchange.amount_to_precision(symbol, qty))
     try:
         order = await exchange.create_order(
             symbol, "take_profit_market", close_side, qty, None,
@@ -488,9 +490,15 @@ async def place_trade(signal: SniperSignal) -> Optional[TradeRecord]:
 
         await _setup_symbol(exchange, signal.symbol)
 
-        # Precision — entry_price is the 40% retrace level from smc.py
-        entry_mid   = (signal.entry_high + signal.entry_low) / 2
-        entry_price = float(exchange.price_to_precision(signal.symbol, entry_mid))
+        # Outer-edge entry for immediate fill (market-side of the 40% retrace zone)
+        # LONG  → price is falling INTO the zone, hits the TOP  edge first
+        # SHORT → price is rising  INTO the zone, hits the BOTTOM edge first
+        entry_raw = (
+            signal.entry_high
+            if signal.direction == "LONG"
+            else signal.entry_low
+        )
+        entry_price = float(exchange.price_to_precision(signal.symbol, entry_raw))
         sl_price    = float(exchange.price_to_precision(signal.symbol, signal.stop_loss))
         tp1_price   = float(exchange.price_to_precision(signal.symbol, signal.tp1))
         tp2_price   = float(exchange.price_to_precision(signal.symbol, signal.tp2))

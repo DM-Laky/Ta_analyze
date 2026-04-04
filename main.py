@@ -27,8 +27,6 @@ import os
 import time as _time
 from pathlib import Path
 
-import matplotlib
-matplotlib.use('Agg') # මේක අනිවාර්යයි සර්වර් එකක දුවද්දී!
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -40,7 +38,7 @@ from dotenv import load_dotenv
 
 from scan import run_scan, fetch_ohlcv
 from watching import run_watcher
-from sniper import run_sniper
+from sniper import run_sniper, run_choch_monitor
 from smc import SniperSignal
 from charting import generate_watchlist_chart, generate_sniper_chart
 from execution import (
@@ -90,6 +88,9 @@ if not AUTO_EXECUTE:
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp  = Dispatcher()
+
+# symbol → Telegram message_id of the "Trade Opened" message (edited live for PnL)
+_pnl_msg_ids: dict[str, int] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -263,6 +264,29 @@ def format_pnl_update(rec: TradeRecord, pnl_usd: float, pnl_pct: float) -> str:
         f"🚀 <b>TP6:</b>  <code>{rec.tp6:.6f}</code>  ← runner",
         f"📦 <b>Qty:</b>  <code>{rec.qty:.6f}</code>",
         "<i>— DM_LKY SMC Bot —</i>",
+    ])
+
+
+def format_live_dashboard(rec: TradeRecord, pnl_usd: float, pnl_pct: float) -> str:
+    """Live dashboard message edited in-place in Telegram (anti-spam PnL update)."""
+    arrow  = "🟢" if rec.direction == "LONG" else "🔴"
+    sign   = "+" if pnl_usd >= 0 else ""
+    bar_emoji = "📈" if pnl_usd >= 0 else "📉"
+    status = rec.status.replace("_", " ")
+    return "\n".join([
+        f"📊 <b>LIVE DASHBOARD — {rec.symbol}</b>  {arrow}",
+        "",
+        f"{bar_emoji} <b>PnL:</b>  <code>{sign}${pnl_usd:.4f}  ({sign}{pnl_pct:.2f}%)</code>",
+        f"🟡 <b>Status:</b>  <code>{status}</code>",
+        "",
+        f"📐 <b>Entry:</b>     <code>{rec.entry_price:.6f}</code>",
+        f"🔴 <b>SL:</b>        <code>{rec.stop_loss:.6f}</code>",
+        f"🎯 <b>TP3 (90%):</b> <code>{rec.tp3:.6f}</code>",
+        f"🚀 <b>TP6 Runner:</b> <code>{rec.tp6:.6f}</code>",
+        "",
+        f"📦 <b>Qty:</b>  <code>{rec.qty:.6f}</code>   "
+        f"⚡ <b>Leverage:</b>  <code>{rec.leverage}× ISO</code>",
+        "<i>— DM_LKY SMC Bot  [updates every 30 s] —</i>",
     ])
 
 
@@ -465,7 +489,15 @@ async def send_order_placed(rec: TradeRecord) -> None:
 
 
 async def send_trade_opened(rec: TradeRecord) -> None:
-    await _send(format_trade_opened(rec))
+    try:
+        msg = await bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=format_trade_opened(rec),
+            parse_mode=ParseMode.HTML,
+        )
+        _pnl_msg_ids[rec.symbol] = msg.message_id
+    except Exception as exc:
+        logger.error("send_trade_opened failed: %s", exc)
     logger.info("Stage 2 — Trade Opened alert sent: %s", rec.symbol)
 
 
@@ -475,6 +507,7 @@ async def send_pnl_update(rec: TradeRecord, pnl_usd: float, pnl_pct: float) -> N
 
 
 async def send_trade_closed(rec: TradeRecord) -> None:
+    _pnl_msg_ids.pop(rec.symbol, None)
     await _send(format_trade_closed(rec))
     logger.info("Stage 4 — Trade Closed alert sent: %s  PnL=$%.4f", rec.symbol, rec.pnl_usd)
 
@@ -494,28 +527,42 @@ async def send_runner_active(rec: TradeRecord) -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 async def hourly_scanner_loop() -> None:
-    """HTF screener — runs every 3600 s; paused while sniper/trades are active."""
+    """HTF screener — runs every 3600 s. Sends start/finish Telegram notifications."""
     while True:
         try:
-            if _is_system_busy():
-                logger.info("── Scanner PAUSED (sniper/trades active) — retry in 5 min ──")
-                await asyncio.sleep(300)
-                continue
+            await _send(
+                "🔍 <b>Hourly Scan STARTED</b>\n"
+                "Scanning 400 USDT-M Futures symbols concurrently (sem=30)…"
+            )
             logger.info("── Hourly scan starting ──")
             results = await run_scan()
-            gc.collect()
             logger.info("── Scan done: %d on WATCHLIST_1 ──", len(results))
+
+            if results:
+                lines = [f"✅ <b>Hourly Scan COMPLETE — {len(results)} coin(s) added to Watchlist 1</b>"]
+                for r in results:
+                    a = "🟢" if r.get("direction") == "bullish" else "🔴"
+                    lines.append(
+                        f"  {a} <code>{r['symbol']}</code>  "
+                        f"score=<code>{r.get('score', '?')}</code>  "
+                        f"dir=<code>{r.get('direction', '?')}</code>"
+                    )
+                await _send("\n".join(lines))
+            else:
+                await _send("✅ <b>Hourly Scan COMPLETE</b>\nNo new coins qualified this scan.")
+
             for entry in results:
                 await send_watchlist_alert(entry)
         except Exception as exc:
             logger.error("Hourly scan error: %s", exc, exc_info=True)
+            await _send(f"⚠️ <b>Scan Error:</b>\n<code>{type(exc).__name__}: {exc}</code>")
         await asyncio.sleep(3600)
 
 
 async def sniper_loop() -> None:
     """
-    10-second HFT loop.
-    Stages: POI approach → sweep → CHoCH → signal → place_trade.
+    5-second loop: watcher promotion + sweep detection.
+    CHoCH confirmation is handled by choch_monitor_loop() at 2 s cadence.
     """
     while True:
         try:
@@ -524,37 +571,16 @@ async def sniper_loop() -> None:
             for entry in promoted:
                 await send_poi_touched_alert(entry)
 
-            # ── Sniper: sweep alerts + CHoCH signals ─────────────────
-            sweep_alerts, sniper_signals = await run_sniper()
+            # ── Sniper: sweep detection (POI_TOUCHED entries only) ────
+            sweep_alerts, _ = await run_sniper()
 
             for sw in sweep_alerts:
                 await send_sweep_alert(sw)
 
-            for sig in sniper_signals:
-                # Always send the signal alert (analysis)
-                await send_sniper_alert(sig)
-
-                # Auto-execute if API keys are configured and trade cap not reached
-                if AUTO_EXECUTE:
-                    if get_active_trade_count() >= MAX_LIVE_TRADES:
-                        logger.info(
-                            "Trade cap (%d) reached — skipping new entry for %s",
-                            MAX_LIVE_TRADES, sig.symbol,
-                        )
-                        continue
-                    try:
-                        rec = await place_trade(sig)
-                        if rec is not None:
-                            await send_order_placed(rec)   # 🔵 Stage 1
-                    except RuntimeError as exc:
-                        logger.warning("Auto-execute disabled: %s", exc)
-                    except Exception as exc:
-                        logger.error("place_trade failed: %s", exc, exc_info=True)
-
         except Exception as exc:
             logger.error("Sniper loop error: %s", exc, exc_info=True)
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
 
 
 async def execution_loop() -> None:
@@ -593,19 +619,77 @@ async def execution_loop() -> None:
         await asyncio.sleep(15)
 
 
+async def choch_monitor_loop() -> None:
+    """
+    2-second ultra-fast CHoCH confirmation loop.
+    Processes only WATCHLIST_2_SWEEP coins — zero entry misses.
+    """
+    while True:
+        try:
+            signals = await run_choch_monitor()
+            for sig in signals:
+                await send_sniper_alert(sig)
+                if AUTO_EXECUTE:
+                    if get_active_trade_count() >= MAX_LIVE_TRADES:
+                        logger.info("Trade cap reached — skip %s", sig.symbol)
+                        continue
+                    try:
+                        rec = await place_trade(sig)
+                        if rec is not None:
+                            await send_order_placed(rec)
+                    except RuntimeError as exc:
+                        logger.warning("Auto-execute blocked: %s", exc)
+                    except Exception as exc:
+                        logger.error("place_trade failed: %s", exc, exc_info=True)
+        except Exception as exc:
+            logger.error("CHoCH monitor error: %s", exc, exc_info=True)
+        await asyncio.sleep(2)
+
+
 async def pnl_tracking_loop() -> None:
     """
-    Stage 3 — every 120 s, send live unrealised PnL for all open positions.
+    Stage 3 — every 30 s, EDIT the Trade Opened message in-place with live PnL.
+    Anti-spam: no new notifications, single "live dashboard" message per trade.
     """
     if not AUTO_EXECUTE:
         return
 
     while True:
-        await asyncio.sleep(120)
+        await asyncio.sleep(30)
         try:
             pnl_data = await get_all_live_pnl()
             for rec, pnl_usd, pnl_pct in pnl_data:
-                await send_pnl_update(rec, pnl_usd, pnl_pct)
+                msg_id = _pnl_msg_ids.get(rec.symbol)
+                if msg_id:
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            message_id=msg_id,
+                            text=format_live_dashboard(rec, pnl_usd, pnl_pct),
+                            parse_mode=ParseMode.HTML,
+                        )
+                        logger.info("PnL dashboard edited: %s  $%.4f", rec.symbol, pnl_usd)
+                    except Exception as edit_exc:
+                        logger.debug("edit_message failed %s: %s — sending new", rec.symbol, edit_exc)
+                        try:
+                            new_msg = await bot.send_message(
+                                chat_id=TELEGRAM_CHAT_ID,
+                                text=format_live_dashboard(rec, pnl_usd, pnl_pct),
+                                parse_mode=ParseMode.HTML,
+                            )
+                            _pnl_msg_ids[rec.symbol] = new_msg.message_id
+                        except Exception as send_exc:
+                            logger.error("PnL fallback send failed %s: %s", rec.symbol, send_exc)
+                else:
+                    try:
+                        new_msg = await bot.send_message(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            text=format_live_dashboard(rec, pnl_usd, pnl_pct),
+                            parse_mode=ParseMode.HTML,
+                        )
+                        _pnl_msg_ids[rec.symbol] = new_msg.message_id
+                    except Exception as send_exc:
+                        logger.error("PnL send failed %s: %s", rec.symbol, send_exc)
         except Exception as exc:
             logger.error("PnL tracking loop error: %s", exc, exc_info=True)
 
@@ -852,12 +936,13 @@ async def main() -> None:
             )
         )
 
-    asyncio.create_task(hourly_scanner_loop())
-    asyncio.create_task(sniper_loop())
-    asyncio.create_task(execution_loop())           # fill / cancel / close monitor
-    asyncio.create_task(pnl_tracking_loop())        # 2-min PnL updates
-    asyncio.create_task(btc_crash_monitor_loop())   # 30-s BTC crash guard
-    asyncio.create_task(_idle_cleanup_loop())       # 60-s idle GC + temp file cleanup
+    asyncio.create_task(hourly_scanner_loop())       # 60-min HTF scan
+    asyncio.create_task(sniper_loop())               # 5-s sweep detection
+    asyncio.create_task(choch_monitor_loop())        # 2-s CHoCH confirmation
+    asyncio.create_task(execution_loop())            # 15-s fill / cancel / close
+    asyncio.create_task(pnl_tracking_loop())         # 30-s PnL edit-in-place
+    asyncio.create_task(btc_crash_monitor_loop())    # 30-s BTC crash guard
+    asyncio.create_task(_idle_cleanup_loop())        # 60-s idle GC + file cleanup
 
     await dp.start_polling(bot)
 

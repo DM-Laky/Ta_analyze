@@ -1,11 +1,12 @@
 """
 scan.py — The LTF Scalp Screener
-Runs every 5 hours (triggered by main.py).
+Runs every hour (triggered by main.py).
 
-1. Fetch Top-350 USDT-M Futures perpetuals (Binance) by 24h quote volume.
-2. Pull 1H (10 days) and 15m (3 days) OHLCV for each.
+1. Fetch Top-400 USDT-M Futures perpetuals (Binance) by 24h quote volume.
+2. Pull 1H (10 days) and 15m (3 days) OHLCV for each — 30 concurrent requests.
 3. Score every coin via smc.score_coin(df_1h, df_15m, cmp).
 4. Pick top-5 (score ≥ MIN_SCORE) and persist as WATCHLIST_1 JSON.
+On a 16 GB server the full scan completes in seconds.
 """
 
 from __future__ import annotations
@@ -132,44 +133,40 @@ async def run_scan() -> List[dict]:
         logger.info(f"Skipping {len(tracked_symbols)} coins already in watchlists. "
                     f"Scanning {len(symbols)} new coins out of {original_count}.")
 
-        scored: list = []
-        batch_size = 10
-        for batch_start in range(0, len(symbols), batch_size):
-            batch = symbols[batch_start:batch_start + batch_size]
-            logger.info("Scanning batch %d–%d of %d…",
-                         batch_start + 1, batch_start + len(batch), len(symbols))
+        sem = asyncio.Semaphore(30)
 
-            for sym in batch:
+        async def _score_symbol(sym: str) -> Optional[dict]:
+            async with sem:
                 df_1h = df_15m = None
                 try:
                     df_1h  = await fetch_ohlcv(exchange, sym, "1h",  10)
                     df_15m = await fetch_ohlcv(exchange, sym, "15m",  3)
                     if df_1h is None or df_15m is None:
-                        continue
+                        return None
                     if len(df_1h) < 30 or len(df_15m) < 30:
-                        continue
-
+                        return None
                     cmp = df_15m["close"].iat[-1]
                     res = score_coin(df_1h, df_15m, cmp)
-                    if (res["score"] >= MIN_SCORE
-                            and res["direction"] and res["poi"]):
-                        scored.append({
-                            "symbol": sym,
-                            "score": res["score"],
-                            "direction": res["direction"],
-                            "poi": res["poi"],
-                            "breakdown": res["breakdown"],
+                    if res["score"] >= MIN_SCORE and res["direction"] and res["poi"]:
+                        return {
+                            "symbol":         sym,
+                            "score":          res["score"],
+                            "direction":      res["direction"],
+                            "poi":            res["poi"],
+                            "breakdown":      res["breakdown"],
                             "ob_fvg_overlap": res.get("ob_fvg_overlap", False),
-                        })
+                        }
+                    return None
                 except Exception as exc:
                     logger.warning("Error scoring %s: %s", sym, exc)
+                    return None
                 finally:
                     del df_1h, df_15m
-                    gc.collect()
 
-            # Pause between batches to avoid rate limits and RAM spikes
-            if batch_start + batch_size < len(symbols):
-                await asyncio.sleep(2)
+        logger.info("Launching concurrent scan (%d symbols, sem=30)…", len(symbols))
+        tasks = [_score_symbol(sym) for sym in symbols]
+        raw_results = await asyncio.gather(*tasks)
+        scored: list = [r for r in raw_results if r is not None]
 
         # Sort and pick top 5
         scored.sort(key=lambda x: x["score"], reverse=True)
