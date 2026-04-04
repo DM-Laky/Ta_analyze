@@ -4,13 +4,13 @@ main.py — SMC Alert Bot  (Auto-Execution Edition)
 Pipeline
 ────────
   hourly_scanner_loop   — HTF scan → WATCHLIST_1 alerts + charts  (60 min)
-  sniper_loop           — POI watch → sweep → CHoCH → ORDER PLACED  (10 s)
+  sniper_loop           — POI watch → sweep → CHoCH → ORDER PLACED  (5 s)
   execution_loop        — Fill detection, cancel-if-missed, close detect  (15 s)
   pnl_tracking_loop     — Live unrealised PnL updates to Telegram  (120 s)
 
 4-Stage Execution Alerts
 ────────────────────────
-  🔵 Stage 1 — Order Placed     (LIMIT at 40% retrace, SL + TP3@90% attached)
+  🔵 Stage 1 — Order Placed     (LIMIT at 30% retrace, SL + TP3@90% attached)
   🟢 Stage 2 — Trade Opened     (limit order filled, position LIVE)
   📊 Stage 3 — Live PnL Update  (every 2 min while position open)
   🏆/🔴 Stage 4 — Trade Closed  (SL or TP hit, final result)
@@ -180,8 +180,8 @@ def format_sniper_alert(sig: SniperSignal) -> str:
         "",
         "━━━ <b>6-TARGET MOONSHOT</b> ━━━",
         f"🎯 <b>TP1 (1:1):</b>      <code>{sig.tp1:.6f}</code>",
-        f"🎯 <b>TP2 (1:2):</b>      <code>{sig.tp2:.6f}</code>",
-        f"🎯 <b>TP3 (1:3):</b>      <code>{sig.tp3:.6f}</code>",
+        f"🎯 <b>TP2 (1:1.5):</b>    <code>{sig.tp2:.6f}</code>",
+        f"🎯 <b>TP3 (1:2) ★:</b>    <code>{sig.tp3:.6f}</code>  ← $3.00 / 90% close",
         f"🎯 <b>TP4 (1:4):</b>      <code>{sig.tp4:.6f}</code>",
         f"🚀 <b>TP5 (1:6):</b>     <code>{sig.tp5:.6f}</code>",
         f"💎 <b>TP6 (Runner):</b>  <code>{sig.tp6:.6f}</code>",
@@ -196,7 +196,7 @@ def format_sniper_alert(sig: SniperSignal) -> str:
     for c in sig.confluences:
         lines.append(f"  • {c}")
     lines += ["",
-              "⚠️ <i>Auto-execution active. LIMIT at 40% retrace. SL + TP3(90%) placed on fill.</i>",
+              "⚠️ <i>Auto-execution active. LIMIT at 30% retrace. SL + TP3(90%) placed on fill.</i>",
               "<i>— DM_LKY SMC Bot —</i>"]
     return "\n".join(lines)
 
@@ -213,7 +213,7 @@ def format_order_placed(rec: TradeRecord) -> str:
         f"📊 <b>Symbol:</b>    <code>{rec.symbol}</code>",
         f"📈 <b>Direction:</b> <code>{rec.direction}</code>",
         "",
-        f"📐 <b>Entry (40% Retrace):</b>  <code>{rec.entry_price:.6f}</code>",
+        f"📐 <b>Entry (30% Retrace):</b>  <code>{rec.entry_price:.6f}</code>",
         f"🔴 <b>Stop Loss:</b>            <code>{rec.stop_loss:.6f}</code>",
         f"🎯 <b>Primary TP  (TP3):</b>    <code>{rec.tp3:.6f}</code>",
         f"🚀 <b>Runner  TP  (TP6):</b>    <code>{rec.tp6:.6f}</code>",
@@ -224,7 +224,7 @@ def format_order_placed(rec: TradeRecord) -> str:
         f"💰 <b>Margin Cost:</b>  <code>${rec.margin_cost:.4f}</code>",
         f"⚖️ <b>Fixed Risk:</b>   <code>${RISK_PER_TRADE:.2f}</code>",
         "",
-        "⏳ <i>LIMIT at 40% retrace. SL + TP3(90%) placed on fill.</i>",
+        "⏳ <i>LIMIT at 30% retrace. SL + TP3(90%) placed on fill.</i>",
         "<i>— DM_LKY SMC Bot —</i>",
     ])
 

@@ -487,10 +487,11 @@ async def _fast_fill_monitor(
         exchange = await _get_auth_exchange()
         for _ in range(15):   # 15 × 2 s = 30 s max
             await asyncio.sleep(2)
-            pending = _load_by_status("PENDING")
-            rec = next((r for r in pending if r.order_id == order_id), None)
-            if rec is None:
-                return   # already handled by execution_loop or cancelled
+            # Re-read from disk so we see any status change by execution_loop
+            all_trades = _load_all_trades()
+            rec = next((r for r in all_trades if r.order_id == order_id), None)
+            if rec is None or rec.status != "PENDING":
+                return   # already handled (LIVE/CANCELLED) or deleted
             try:
                 order = await exchange.fetch_order(order_id, symbol)
                 if str(order.get("status", "")).lower() == "closed":
@@ -498,9 +499,11 @@ async def _fast_fill_monitor(
                                     or rec.entry_price)
                     rec.entry_price = fill_px
                     rec.filled_ts   = time.time()
-                    rec.status      = "LIVE"
+                    rec.status      = "LIVE"      # mark LIVE
+                    _save_trade(rec)             # ← save BEFORE placing orders
+                    #   monitor_trades() will now see status=LIVE and skip
                     await _place_protection_orders(exchange, rec, fill_px)
-                    _save_trade(rec)
+                    _save_trade(rec)             # re-save with order IDs
                     logger.info("FAST FILL  %s @ %.6f  orders protected",
                                 symbol, fill_px)
                     return
@@ -579,7 +582,6 @@ async def place_trade(signal: SniperSignal) -> Optional[TradeRecord]:
         sl_price    = float(exchange.price_to_precision(signal.symbol, signal.stop_loss))
         tp1_price   = float(exchange.price_to_precision(signal.symbol, signal.tp1))
         tp2_price   = float(exchange.price_to_precision(signal.symbol, signal.tp2))
-        tp3_price   = float(exchange.price_to_precision(signal.symbol, signal.tp3))
         tp6_price   = float(exchange.price_to_precision(signal.symbol, signal.tp6))
 
         qty = _calc_qty(entry_price, sl_price, exchange, signal.symbol)
@@ -677,9 +679,15 @@ async def monitor_trades() -> MonitorResult:
                 os_   = str(order.get("status", "")).lower()
 
                 if os_ == "closed":
-                    # Skip if fast_fill_monitor already handled this fill
-                    if rec.status == "LIVE":
-                        result.filled.append(rec)
+                    # Re-read on-disk status — fast_fill_monitor may have
+                    # already promoted this record to LIVE and placed orders.
+                    fresh = next(
+                        (t for t in _load_all_trades()
+                         if t.order_id == rec.order_id),
+                        None,
+                    )
+                    if fresh and fresh.status != "PENDING":
+                        result.filled.append(fresh)
                         continue
 
                     fill_px = float(order.get("average") or order.get("price")

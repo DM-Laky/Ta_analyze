@@ -121,7 +121,11 @@ async def run_scan() -> List[dict]:
                         data = json.load(f)
                     sym = data.get("symbol")
                     # WATCHLIST_1 හෝ WATCHLIST_2 වල ඉන්නවා නම් විතරක් ට්‍රැක් කරගමු
-                    if sym and data.get("status") in ["WATCHLIST_1", "WATCHLIST_2"]:
+                    if sym and data.get("status") in [
+                        "WATCHLIST_1",
+                        "WATCHLIST_2_POI_TOUCHED",
+                        "WATCHLIST_2_SWEEP",
+                    ]:
                         tracked_symbols.add(sym)
                 except Exception:
                     pass

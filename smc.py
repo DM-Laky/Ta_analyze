@@ -1677,7 +1677,11 @@ def build_momentum_signal(
 
     # ── SL: 0.175% buffer beyond sweep wick ──────────────────────────
     atr_series  = compute_atr(df_ltf, 14)
-    atr_val     = float(atr_series.iloc[-1]) if not np.isnan(atr_series.iloc[-1]) else 0.0
+    atr_val     = (
+        float(atr_series.iloc[-1])
+        if len(atr_series) > 0 and not np.isnan(atr_series.iloc[-1])
+        else 0.0
+    )
 
     if trade_dir == "LONG":
         sl_extreme = float(lows[sweep_idx])
