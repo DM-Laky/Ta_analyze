@@ -1,0 +1,8 @@
+aiogram
+ccxt
+pandas
+numpy
+python-dotenv
+aiofiles
+mplfinance
+matplotlib
