@@ -27,6 +27,8 @@ import os
 import time as _time
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('Agg') # මේක අනිවාර්යයි සර්වර් එකක දුවද්දී!
 import matplotlib.pyplot as plt
 import pandas as pd
 
