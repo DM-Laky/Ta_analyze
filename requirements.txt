@@ -2,7 +2,7 @@
 # Install with: pip install -r requirements.txt
 
 # ── Core ─────────────────────────────────────────────────────────────────────
-MetaTrader5              # MT5 Python API (Windows/Linux via Wine)
+MetaTrader5>=5.0.45                # MT5 Python API (Windows/Linux via Wine)
 pandas>=2.0.0
 numpy>=1.24.0
 python-dateutil>=2.8.2
