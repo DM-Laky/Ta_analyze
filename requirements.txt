@@ -1,23 +1,6 @@
-# GOLD HUNTER PRO — Python Dependencies
-# Install with: pip install -r requirements.txt
-
-# ── Core ─────────────────────────────────────────────────────────────────────
-MetaTrader5>=5.0.45                # MT5 Python API (Windows/Linux via Wine)
-pandas>=2.0.0
-numpy>=1.24.0
-python-dateutil>=2.8.2
-pytz>=2023.3
-
-# ── Scheduling ────────────────────────────────────────────────────────────────
-APScheduler>=3.10.4
-
-# ── Telegram ──────────────────────────────────────────────────────────────────
-python-telegram-bot>=20.7        # Async v20+ API
-
-# ── Charts ────────────────────────────────────────────────────────────────────
-matplotlib>=3.7.0
-Pillow>=10.0.0
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
-python-dotenv>=1.0.0             # Load .env file
-requests>=2.31.0
+ccxt>=4.4.0
+ccxtpro>=0.0.0
+python-telegram-bot>=21.0
+plotly>=5.22.0
+kaleido>=0.2.1
+pydantic>=2.8.0
